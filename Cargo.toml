@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ossgalley-core",
+    "crates/ossgalley-cli",
+    "crates/ossgalley-web",
+]
+
+[package]
+name = "ossgalley-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+ossgalley-core = { path = "crates/ossgalley-core" }
+uuid = { version = "1", features = ["v4"] }
+aws-sdk-s3 = "1.138.1"
+aws-config = "1.5.0"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+async-trait = "0.1"

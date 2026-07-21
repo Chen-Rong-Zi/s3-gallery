@@ -1,0 +1,196 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      s3_endpoint:
+        description: "S3 endpoint URL for E2E tests"
+        required: true
+        default: "http://localhost:9000"
+        type: string
+      access_key:
+        description: "S3 access key"
+        required: true
+        default: "minioadmin"
+        type: string
+      secret_key:
+        description: "S3 secret key"
+        required: true
+        default: "minioadmin"
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Run tests with all features
+        run: cargo test --workspace --all-features
+
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release
+        run: cargo build --workspace --release
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ossgalley-${{ matrix.os }}
+          path: target/release/
+          if-no-files-found: warn
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Generate coverage report
+        run: cargo tarpaulin --out Xml
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: cobertura.xml
+          fail_ci_if_error: false
+
+  e2e:
+    name: E2E Tests
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Start MinIO
+        run: |
+          docker compose -f docker-compose.yml up -d minio
+          echo "Waiting for MinIO to be ready..."
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:9000/minio/health/live > /dev/null 2>&1; then
+              echo "MinIO is ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Run seed script
+        run: |
+          chmod +x ./scripts/seed.sh 2>/dev/null || true
+          ./scripts/seed.sh 2>/dev/null || echo "No seed script found, skipping"
+        env:
+          S3_ENDPOINT: ${{ inputs.s3_endpoint || 'http://localhost:9000' }}
+          AWS_ACCESS_KEY_ID: ${{ inputs.access_key || 'minioadmin' }}
+          AWS_SECRET_ACCESS_KEY: ${{ inputs.secret_key || 'minioadmin' }}
+
+      - name: Run E2E tests
+        run: cargo test --workspace --ignored
+        env:
+          S3_ENDPOINT: ${{ inputs.s3_endpoint || 'http://localhost:9000' }}
+          AWS_ACCESS_KEY_ID: ${{ inputs.access_key || 'minioadmin' }}
+          AWS_SECRET_ACCESS_KEY: ${{ inputs.secret_key || 'minioadmin' }}
+
+      - name: Stop MinIO
+        if: always()
+        run: docker compose -f docker-compose.yml down

@@ -1,0 +1,40 @@
+{% extends "layout.html" %}
+{% block title %}{{ file.name }} - ossgalley{% endblock %}
+{% block content %}
+<h1>{{ file.name }}</h1>
+
+{% if has_thumbnail %}
+<div class="file-thumbnail">
+    <img src="/thumbnails/{{ file.key }}" alt="{{ file.name }}" class="thumbnail-large">
+</div>
+{% endif %}
+
+<h2>File Information</h2>
+<table>
+    <tr><th>Key</th><td>{{ file.key }}</td></tr>
+    <tr><th>Size</th><td>{{ file.size_formatted }} ({{ file.size }} bytes)</td></tr>
+    <tr><th>Type</th><td><span class="file-type-badge">{{ file.file_type }}</span></td></tr>
+    {% if file.content_type %}
+    <tr><th>Content-Type</th><td>{{ file.content_type }}</td></tr>
+    {% endif %}
+    <tr><th>Modified</th><td>{{ file.last_modified }}</td></tr>
+    <tr><th>ETag</th><td>{{ file.etag }}</td></tr>
+    <tr><th>Metadata State</th><td>{{ file.metadata_state }}</td></tr>
+</table>
+
+{% if metadata_by_namespace %}
+<h2>Metadata</h2>
+{% for namespace, items in metadata_by_namespace %}
+<h3>{{ namespace }}</h3>
+<table>
+    {% for item in items %}
+    <tr><th>{{ item.key }}</th><td>{{ item.value }}</td></tr>
+    {% endfor %}
+</table>
+{% endfor %}
+{% endif %}
+
+<div class="file-actions">
+    <a href="/download/{{ file.key }}" class="download-link">Download</a>
+</div>
+{% endblock %}

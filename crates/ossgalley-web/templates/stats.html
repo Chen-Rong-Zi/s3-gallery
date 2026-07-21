@@ -1,0 +1,15 @@
+{% extends "layout.html" %}
+{% block title %}Stats - ossgalley{% endblock %}
+{% block content %}
+<h1>Statistics</h1>
+<table>
+    <tr><th>Total files</th><td>{{ stats.total_files }}</td></tr>
+    <tr><th>Total size</th><td>{{ stats.total_size }}</td></tr>
+</table>
+<h2>By Category</h2>
+<table>
+    {% for item in stats.by_category %}
+    <tr><td>{{ item.name }}</td><td>{{ item.count }}</td></tr>
+    {% endfor %}
+</table>
+{% endblock %}

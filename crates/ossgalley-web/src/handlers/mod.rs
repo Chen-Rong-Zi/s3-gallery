@@ -1,0 +1,25 @@
+pub mod browse;
+pub mod dashboard;
+pub mod download;
+pub mod duplicates;
+pub mod file_detail;
+pub mod gallery;
+pub mod search;
+pub mod settings;
+pub mod stats;
+pub mod tags;
+pub mod thumbnail;
+pub mod timeline;
+
+pub use browse::browse;
+pub use dashboard::dashboard;
+pub use download::download;
+pub use duplicates::duplicates;
+pub use file_detail::file_detail;
+pub use gallery::gallery;
+pub use search::search;
+pub use settings::settings;
+pub use stats::stats;
+pub use tags::tags;
+pub use thumbnail::thumbnail;
+pub use timeline::timeline;

@@ -1,0 +1,11 @@
+/target
+.DS_Store
+*.swp
+.env
+
+# Docker / MinIO generated data
+/data
+/certs
+
+# Generated test files for MinIO seeding
+/scripts/test-files/
