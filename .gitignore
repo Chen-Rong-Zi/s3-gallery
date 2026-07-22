@@ -9,3 +9,10 @@
 
 # Generated test files for MinIO seeding
 /scripts/test-files/
+
+# Local database files created by scan command
+.ossgallery/
+*.db
+*.db-shm
+*.db-wal
+.claude/worktrees/
