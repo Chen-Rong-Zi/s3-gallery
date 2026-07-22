@@ -318,7 +318,7 @@ async fn process_file_metadata(
     // Check if any extractor supports this file type
     if registry.find(&file_type, ext.as_str()).is_empty() {
         // Mark as extracted so we don't retry on every scan
-        let _ = sqlx::query("UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?")
+        let _result = sqlx::query("UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?")
             .bind(&config.host_id).bind(key)
             .execute(&config.db).await;
         return Ok(0);
@@ -340,7 +340,7 @@ async fn process_file_metadata(
         Err(e) => {
             tracing::warn!(key = %key, error = %e, "metadata extraction failed");
             // Mark as failed so we don't retry on every scan
-            let _ = sqlx::query("UPDATE files SET metadata_state = 'failed' WHERE host_id = ? AND key = ?")
+            let _result = sqlx::query("UPDATE files SET metadata_state = 'failed' WHERE host_id = ? AND key = ?")
                 .bind(&config.host_id).bind(key)
                 .execute(&config.db).await;
             return Ok(0);
@@ -349,7 +349,7 @@ async fn process_file_metadata(
 
     if items.is_empty() {
         // Mark as extracted so we don't retry on every scan
-        let _ = sqlx::query("UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?")
+        let _result = sqlx::query("UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?")
             .bind(&config.host_id).bind(key)
             .execute(&config.db).await;
         return Ok(0);

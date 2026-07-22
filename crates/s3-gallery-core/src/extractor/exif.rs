@@ -50,19 +50,19 @@ impl ExifExtractor {
     /// looks for the EXIF marker and ignores all other segments.
     fn find_exif_in_jpeg(data: &[u8]) -> Option<Vec<u8>> {
         // Check JPEG SOI (0xFF 0xD8)
-        if data.len() < 2 || data[0] != 0xFF || data[1] != 0xD8 {
+        if data.get(0).copied() != Some(0xFF) || data.get(1).copied() != Some(0xD8) {
             return None;
         }
 
         let mut pos: usize = 2;
         while pos + 4 <= data.len() {
             // Skip non-0xFF bytes (scan data or padding)
-            if data[pos] != 0xFF {
+            if data.get(pos).copied() != Some(0xFF) {
                 pos += 1;
                 continue;
             }
 
-            let marker = data[pos + 1];
+            let marker = data.get(pos + 1).copied()?;
 
             // Skip stand-alone markers (no segment data)
             if marker == 0x00 || marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
@@ -84,7 +84,9 @@ impl ExifExtractor {
             if pos + 4 > data.len() {
                 break;
             }
-            let seg_len = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
+            let b0 = data.get(pos + 2).copied().unwrap_or(0);
+            let b1 = data.get(pos + 3).copied().unwrap_or(0);
+            let seg_len = u16::from_be_bytes([b0, b1]) as usize;
             if seg_len < 2 {
                 break;
             }
@@ -95,13 +97,13 @@ impl ExifExtractor {
             // Check if this is APP1 (0xE1) with Exif identifier
             if marker == 0xE1
                 && seg_data_start + 6 <= data.len()
-                && &data[seg_data_start..seg_data_start + 6] == b"Exif\0\0"
+                && data.get(seg_data_start..seg_data_start + 6) == Some(b"Exif\0\0")
             {
                 // Extract the TIFF data (after "Exif\0\0")
                 let tiff_start = seg_data_start + 6;
                 let tiff_end = seg_data_end.min(data.len());
                 if tiff_end > tiff_start {
-                    return Some(data[tiff_start..tiff_end].to_vec());
+                    return data.get(tiff_start..tiff_end).map(|s| s.to_vec());
                 }
                 return None;
             }
@@ -150,6 +152,7 @@ impl MetadataExtractor for ExifExtractor {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// Verify find_exif_in_jpeg works with a minimal JPEG containing EXIF.

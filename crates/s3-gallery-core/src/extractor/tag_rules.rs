@@ -103,9 +103,9 @@ pub fn parse_exposure_time(s: &str) -> f64 {
 pub fn parse_dms(s: &str) -> f64 {
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() >= 5 {
-        let deg: f64 = parts[0].parse().unwrap_or(0.0);
-        let min: f64 = parts[2].parse().unwrap_or(0.0);
-        let sec: f64 = parts[4].parse().unwrap_or(0.0);
+        let deg: f64 = parts.get(0).copied().unwrap_or("0").parse().unwrap_or(0.0);
+        let min: f64 = parts.get(2).copied().unwrap_or("0").parse().unwrap_or(0.0);
+        let sec: f64 = parts.get(4).copied().unwrap_or("0").parse().unwrap_or(0.0);
         deg + min / 60.0 + sec / 3600.0
     } else {
         s.parse().unwrap_or(0.0)
@@ -176,7 +176,7 @@ impl TagRule {
             rule("composite", &["CompositeImage"], Pattern("{0}"), None),
             // 连续→离散：焦距
             rule("focal", &["FocalLengthIn35mmFilm"], Compute(|vals| {
-                let f: f64 = vals[0].parse().unwrap_or(0.0);
+                let f: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match f {
                     _ if f < 20.0 => "ultrawide",
                     _ if f < 35.0 => "wide",
@@ -186,7 +186,7 @@ impl TagRule {
                 }.to_string()
             }), None),
             rule("focal", &["FocalLength"], Compute(|vals| {
-                let f: f64 = vals[0].parse().unwrap_or(0.0);
+                let f: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match f {
                     _ if f < 20.0 => "ultrawide",
                     _ if f < 35.0 => "wide",
@@ -197,7 +197,7 @@ impl TagRule {
             }), None),
             // 连续→离散：光圈
             rule("aperture", &["FNumber"], Compute(|vals| {
-                let f: f64 = vals[0].parse().unwrap_or(0.0);
+                let f: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match f {
                     _ if f <= 2.0 => "fast",
                     _ if f <= 2.8 => "bright",
@@ -207,7 +207,7 @@ impl TagRule {
             }), None),
             // 连续→离散：快门
             rule("shutter", &["ExposureTime"], Compute(|vals| {
-                let t = parse_exposure_time(&vals[0]);
+                let t = parse_exposure_time(vals.first().copied().unwrap_or(""));
                 match t {
                     _ if t > 1.0 => "long",
                     _ if t > 1.0 / 30.0 => "slow",
@@ -218,7 +218,7 @@ impl TagRule {
             }), None),
             // 连续→离散：ISO
             rule("iso", &["PhotographicSensitivity"], Compute(|vals| {
-                let iso: f64 = vals[0].parse().unwrap_or(0.0);
+                let iso: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match iso {
                     _ if iso < 200.0 => "low",
                     _ if iso < 800.0 => "medium",
@@ -228,7 +228,7 @@ impl TagRule {
             }), None),
             // 连续→离散：曝光补偿
             rule("exposure_bias", &["ExposureBiasValue"], Compute(|vals| {
-                let bias: f64 = vals[0].parse().unwrap_or(0.0);
+                let bias: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match bias {
                     _ if bias < -0.5 => "negative",
                     _ if bias > 0.5 => "positive",
@@ -237,7 +237,7 @@ impl TagRule {
             }), None),
             // 连续→离散：亮度
             rule("brightness", &["BrightnessValue"], Compute(|vals| {
-                let bv: f64 = vals[0].parse().unwrap_or(0.0);
+                let bv: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match bv {
                     _ if bv < 0.0 => "dark",
                     _ if bv < 5.0 => "dim",
@@ -247,7 +247,7 @@ impl TagRule {
             }), None),
             // 连续→离散：拍摄距离
             rule("distance_m", &["SubjectDistance"], Compute(|vals| {
-                let d: f64 = vals[0].parse().unwrap_or(0.0);
+                let d: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match d {
                     _ if d < 0.3 => "macro",
                     _ if d < 3.0 => "near",
@@ -257,7 +257,7 @@ impl TagRule {
             }), None),
             // 连续→离散：数码变焦
             rule("digital_zoom", &["DigitalZoomRatio"], Compute(|vals| {
-                let z: f64 = vals[0].parse().unwrap_or(1.0);
+                let z: f64 = vals.first().copied().unwrap_or("1").parse().unwrap_or(1.0);
                 match z {
                     _ if z <= 1.0 => "none",
                     _ if z <= 2.0 => "moderate",
@@ -266,14 +266,14 @@ impl TagRule {
             }), None),
             // 连续→离散：宽高比
             rule("aspect", &["PixelXDimension", "PixelYDimension"], Compute(|vals| {
-                let w: u32 = vals[0].parse().unwrap_or(1);
-                let h: u32 = vals[1].parse().unwrap_or(1);
+                let w: u32 = vals.first().copied().unwrap_or("1").parse().unwrap_or(1);
+                let h: u32 = vals.get(1).copied().unwrap_or("1").parse().unwrap_or(1);
                 let g = gcd(w, h);
                 format!("{}:{}", w / g, h / g)
             }), None),
             // 连续→离散：分辨率
             rule("resolution", &["XResolution"], Compute(|vals| {
-                let dpi: f64 = vals[0].parse().unwrap_or(0.0);
+                let dpi: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match dpi {
                     _ if dpi < 150.0 => "draft",
                     _ if dpi < 300.0 => "standard",
@@ -282,27 +282,27 @@ impl TagRule {
             }), None),
             // 时间维度
             rule("date", &["DateTimeOriginal"], Compute(|vals| {
-                vals[0].get(..10).unwrap_or("").to_string()
+                vals.first().copied().unwrap_or("").get(..10).unwrap_or("").to_string()
             }), None),
             rule("year", &["DateTimeOriginal"], Compute(|vals| {
-                vals[0].get(..4).unwrap_or("").to_string()
+                vals.first().copied().unwrap_or("").get(..4).unwrap_or("").to_string()
             }), None),
             rule("month", &["DateTimeOriginal"], Compute(|vals| {
-                vals[0].get(..7).unwrap_or("").to_string()
+                vals.first().copied().unwrap_or("").get(..7).unwrap_or("").to_string()
             }), None),
             rule("season", &["DateTimeOriginal"], Compute(|vals| {
-                let m: u32 = vals[0].get(5..7).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let m: u32 = vals.first().copied().unwrap_or("").get(5..7).and_then(|s| s.parse().ok()).unwrap_or(0);
                 match m { 3..=5 => "spring", 6..=8 => "summer",
                           9..=11 => "autumn", _ => "winter" }.to_string()
             }), None),
             rule("timeofday", &["DateTimeOriginal"], Compute(|vals| {
-                let h: u32 = vals[0].get(11..13).and_then(|s| s.parse().ok()).unwrap_or(0);
+                let h: u32 = vals.first().copied().unwrap_or("").get(11..13).and_then(|s| s.parse().ok()).unwrap_or(0);
                 match h { 4..=6 => "dawn", 7..=10 => "morning", 11..=12 => "midday",
                           13..=16 => "afternoon", 17..=19 => "dusk", _ => "night" }.to_string()
             }), None),
             // 时区
             rule("timezone", &["OffsetTimeOriginal"], Compute(|vals| {
-                let tz = vals[0].trim_matches('"').trim();
+                let tz = vals.first().copied().unwrap_or("").trim_matches('"').trim();
                 // "+08:00" → "UTC+8", "-05:00" → "UTC-5"
                 if let Some(rest) = tz.strip_prefix("+") {
                     format!("UTC+{}", rest.trim_end_matches(":00").trim_end_matches(":0"))
@@ -314,42 +314,42 @@ impl TagRule {
             }), None),
             // 环境参数
             rule("temperature", &["Temperature"], Compute(|vals| {
-                let t: f64 = vals[0].parse().unwrap_or(0.0);
+                let t: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match t { _ if t < 5.0 => "cold", _ if t < 20.0 => "mild",
                           _ if t < 30.0 => "warm", _ => "hot" }.to_string()
             }), None),
             rule("humidity", &["Humidity"], Compute(|vals| {
-                let h: f64 = vals[0].parse().unwrap_or(50.0);
+                let h: f64 = vals.first().copied().unwrap_or("50").parse().unwrap_or(50.0);
                 match h { _ if h < 30.0 => "dry", _ if h < 70.0 => "normal", _ => "humid" }.to_string()
             }), None),
             rule("pressure", &["Pressure"], Compute(|vals| {
-                let p: f64 = vals[0].parse().unwrap_or(1013.0);
+                let p: f64 = vals.first().copied().unwrap_or("1013").parse().unwrap_or(1013.0);
                 match p { _ if p < 1000.0 => "low", _ if p < 1020.0 => "normal", _ => "high" }.to_string()
             }), None),
             // GPS
             rule("grid", &["GPSLatitude", "GPSLongitude"], Compute(|vals| {
-                let lat = parse_dms(&vals[0]);
-                let lon = parse_dms(&vals[1]);
+                let lat = parse_dms(vals.first().copied().unwrap_or(""));
+                let lon = parse_dms(vals.get(1).copied().unwrap_or(""));
                 format!("{:.2}_{:.2}", (lat * 100.0).round() / 100.0, (lon * 100.0).round() / 100.0)
             }), None),
             rule("altitude", &["GPSAltitude"], Compute(|vals| {
-                let a: f64 = vals[0].parse().unwrap_or(0.0);
+                let a: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match a { _ if a < 50.0 => "sea_level", _ if a < 500.0 => "low",
                           _ if a < 2000.0 => "medium", _ => "high" }.to_string()
             }), None),
             rule("direction", &["GPSImgDirection"], Compute(|vals| {
-                let d: f64 = vals[0].parse().unwrap_or(0.0);
+                let d: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 let dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-                dirs[((d / 45.0).round() as usize) % 8].to_string()
+                dirs.get(((d / 45.0).round() as usize) % 8).copied().unwrap_or("N").to_string()
             }), None),
             rule("speed", &["GPSSpeed"], Compute(|vals| {
-                let s: f64 = vals[0].parse().unwrap_or(0.0);
+                let s: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
                 match s { _ if s < 1.0 => "stationary", _ if s < 6.0 => "walking",
                           _ if s < 15.0 => "running", _ if s < 120.0 => "driving",
                           _ => "flying" }.to_string()
             }), None),
             rule("gps_accuracy", &["GPSDOP"], Compute(|vals| {
-                let d: f64 = vals[0].parse().unwrap_or(99.0);
+                let d: f64 = vals.first().copied().unwrap_or("99").parse().unwrap_or(99.0);
                 match d { _ if d < 2.0 => "excellent", _ if d < 5.0 => "good",
                           _ if d < 10.0 => "moderate", _ => "poor" }.to_string()
             }), None),
