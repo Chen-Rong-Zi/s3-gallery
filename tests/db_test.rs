@@ -3,12 +3,12 @@
 //! Tests full CRUD for all model types, schema migration idempotency,
 //! and WAL journal mode.
 
-use ossgalley_core::db::models::{
+use s3_gallery_core::db::models::{
     FileEntry, FileTagEntry, HostConfigEntry, MetadataEntry, ScanMetadata, TagEntry, ThumbnailEntry,
 };
-use ossgalley_core::db::pool::create_pool;
-use ossgalley_core::db::schema::run_migrations;
-use ossgalley_core::error::{OssgalleyError, Result};
+use s3_gallery_core::db::pool::create_pool;
+use s3_gallery_core::db::schema::run_migrations;
+use s3_gallery_core::error::{Result, S3GalleryError};
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
@@ -20,8 +20,7 @@ mod common;
 
 /// Create a temporary database with migrations applied.
 async fn setup_db() -> Result<(SqlitePool, TempDir)> {
-    let dir = tempfile::tempdir()
-        .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+    let dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     let db_path = dir.path().join("test.db");
     let pool = create_pool(&db_path).await?;
     run_migrations(&pool).await?;
@@ -33,6 +32,7 @@ async fn insert_base_file(pool: &SqlitePool) -> Result<()> {
     FileEntry::insert(
         pool,
         &FileEntry {
+            host_id: "test-host".to_string(),
             key: "base/file.jpg".to_string(),
             etag: "base-etag".to_string(),
             size: 100,
@@ -40,6 +40,7 @@ async fn insert_base_file(pool: &SqlitePool) -> Result<()> {
             content_type: Some("image/jpeg".to_string()),
             file_type: "jpeg".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
     )
@@ -59,10 +60,11 @@ async fn test_schema_migration_creates_all_tables() -> Result<()> {
     )
     .fetch_all(&pool)
     .await
-    .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+    .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     let expected = [
         "classification_rules",
+        "dir_sizes",
         "extractor_rules",
         "file_tags",
         "files",
@@ -92,12 +94,11 @@ async fn test_migration_is_idempotent() -> Result<()> {
     run_migrations(&pool).await?;
 
     // Tables should still exist.
-    let tables: Vec<String> = sqlx::query_scalar(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+    let tables: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     assert!(tables.contains(&"files".to_string()));
     assert!(tables.contains(&"metadata".to_string()));
@@ -111,7 +112,7 @@ async fn test_wal_mode_is_enabled() -> Result<()> {
     let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode;")
         .fetch_one(&pool)
         .await
-        .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     assert_eq!(
         journal_mode.to_lowercase(),
@@ -128,7 +129,7 @@ async fn test_foreign_keys_are_enabled() -> Result<()> {
     let fk_enabled: i32 = sqlx::query_scalar("PRAGMA foreign_keys;")
         .fetch_one(&pool)
         .await
-        .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     assert_eq!(fk_enabled, 1, "foreign keys should be enabled");
     Ok(())
@@ -138,12 +139,10 @@ async fn test_foreign_keys_are_enabled() -> Result<()> {
 async fn test_schema_version_is_set() -> Result<()> {
     let (pool, _dir) = setup_db().await?;
 
-    let version: i64 = sqlx::query_scalar(
-        "SELECT db_schema_version FROM scan_metadata LIMIT 1",
-    )
-    .fetch_one(&pool)
-    .await
-    .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+    let version: i64 = sqlx::query_scalar("SELECT db_schema_version FROM scan_metadata LIMIT 1")
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     assert_eq!(version, 1);
     Ok(())
@@ -163,6 +162,9 @@ async fn test_host_config_full_crud() -> Result<()> {
         host_type: "s3".to_string(),
         description: "Created during integration test".to_string(),
         created_at: "2026-07-01T00:00:00Z".to_string(),
+        bucket: "".to_string(),
+        endpoint: "".to_string(),
+        region: "".to_string(),
     };
 
     // Create
@@ -186,7 +188,7 @@ async fn test_host_config_full_crud() -> Result<()> {
     HostConfigEntry::delete(&pool, "integration-host").await?;
     let result = HostConfigEntry::get(&pool, "integration-host").await;
     assert!(result.is_err());
-    assert!(matches!(result, Err(OssgalleyError::NotFound(_))));
+    assert!(matches!(result, Err(S3GalleryError::NotFound(_))));
     Ok(())
 }
 
@@ -195,7 +197,7 @@ async fn test_host_config_get_not_found() -> Result<()> {
     let (pool, _dir) = setup_db().await?;
     let result = HostConfigEntry::get(&pool, "nonexistent").await;
     assert!(result.is_err());
-    assert!(matches!(result, Err(OssgalleyError::NotFound(_))));
+    assert!(matches!(result, Err(S3GalleryError::NotFound(_))));
     Ok(())
 }
 
@@ -208,6 +210,7 @@ async fn test_file_entry_full_crud() -> Result<()> {
     let (pool, _dir) = setup_db().await?;
 
     let entry = FileEntry {
+        host_id: "test-host".to_string(),
         key: "integration/test.jpg".to_string(),
         etag: "test-etag-123".to_string(),
         size: 5555,
@@ -215,6 +218,7 @@ async fn test_file_entry_full_crud() -> Result<()> {
         content_type: Some("image/jpeg".to_string()),
         file_type: "jpeg".to_string(),
         metadata_state: "pending".to_string(),
+        effective_date: "".to_string(),
         is_deleted: false,
     };
 
@@ -222,7 +226,7 @@ async fn test_file_entry_full_crud() -> Result<()> {
     FileEntry::insert(&pool, &entry).await?;
 
     // Read
-    let fetched = FileEntry::get_by_key(&pool, "integration/test.jpg").await?;
+    let fetched = FileEntry::get_by_key(&pool, "test-host", "integration/test.jpg").await?;
     assert_eq!(fetched.etag, "test-etag-123");
     assert_eq!(fetched.size, 5555);
     assert_eq!(fetched.content_type, Some("image/jpeg".to_string()));
@@ -234,13 +238,13 @@ async fn test_file_entry_full_crud() -> Result<()> {
         ..entry
     };
     FileEntry::upsert(&pool, &upserted).await?;
-    let fetched = FileEntry::get_by_key(&pool, "integration/test.jpg").await?;
+    let fetched = FileEntry::get_by_key(&pool, "test-host", "integration/test.jpg").await?;
     assert_eq!(fetched.etag, "updated-etag");
     assert_eq!(fetched.size, 6666);
 
     // Soft delete
-    FileEntry::mark_deleted(&pool, "integration/test.jpg").await?;
-    let fetched = FileEntry::get_by_key(&pool, "integration/test.jpg").await?;
+    FileEntry::mark_deleted(&pool, "test-host", "integration/test.jpg").await?;
+    let fetched = FileEntry::get_by_key(&pool, "test-host", "integration/test.jpg").await?;
     assert!(fetched.is_deleted);
 
     Ok(())
@@ -252,6 +256,7 @@ async fn test_file_entry_list_by_prefix() -> Result<()> {
 
     let files = vec![
         FileEntry {
+            host_id: "test-host".to_string(),
             key: "prefix/a.txt".to_string(),
             etag: "e1".to_string(),
             size: 10,
@@ -259,9 +264,11 @@ async fn test_file_entry_list_by_prefix() -> Result<()> {
             content_type: None,
             file_type: "txt".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
         FileEntry {
+            host_id: "test-host".to_string(),
             key: "prefix/b.txt".to_string(),
             etag: "e2".to_string(),
             size: 20,
@@ -269,9 +276,11 @@ async fn test_file_entry_list_by_prefix() -> Result<()> {
             content_type: None,
             file_type: "txt".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
         FileEntry {
+            host_id: "test-host".to_string(),
             key: "other/c.txt".to_string(),
             etag: "e3".to_string(),
             size: 30,
@@ -279,6 +288,7 @@ async fn test_file_entry_list_by_prefix() -> Result<()> {
             content_type: None,
             file_type: "txt".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
     ];
@@ -286,10 +296,10 @@ async fn test_file_entry_list_by_prefix() -> Result<()> {
         FileEntry::insert(&pool, f).await?;
     }
 
-    let results = FileEntry::list_by_prefix(&pool, "prefix/").await?;
+    let results = FileEntry::list_by_prefix(&pool, "test-host", "prefix/").await?;
     assert_eq!(results.len(), 2);
 
-    let results = FileEntry::list_by_prefix(&pool, "nonexistent/").await?;
+    let results = FileEntry::list_by_prefix(&pool, "test-host", "nonexistent/").await?;
     assert!(results.is_empty());
     Ok(())
 }
@@ -300,6 +310,7 @@ async fn test_file_entry_list_by_file_type() -> Result<()> {
 
     let files = vec![
         FileEntry {
+            host_id: "test-host".to_string(),
             key: "img.jpg".to_string(),
             etag: "e1".to_string(),
             size: 100,
@@ -307,9 +318,11 @@ async fn test_file_entry_list_by_file_type() -> Result<()> {
             content_type: Some("image/jpeg".to_string()),
             file_type: "jpeg".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
         FileEntry {
+            host_id: "test-host".to_string(),
             key: "doc.pdf".to_string(),
             etag: "e2".to_string(),
             size: 200,
@@ -317,6 +330,7 @@ async fn test_file_entry_list_by_file_type() -> Result<()> {
             content_type: Some("application/pdf".to_string()),
             file_type: "pdf".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
     ];
@@ -324,7 +338,7 @@ async fn test_file_entry_list_by_file_type() -> Result<()> {
         FileEntry::insert(&pool, f).await?;
     }
 
-    let results = FileEntry::list_by_file_type(&pool, "jpeg").await?;
+    let results = FileEntry::list_by_file_type(&pool, "test-host", "jpeg").await?;
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].key, "img.jpg");
     Ok(())
@@ -334,11 +348,12 @@ async fn test_file_entry_list_by_file_type() -> Result<()> {
 async fn test_file_entry_count() -> Result<()> {
     let (pool, _dir) = setup_db().await?;
 
-    assert_eq!(FileEntry::count(&pool).await?, 0);
+    assert_eq!(FileEntry::count(&pool, "test-host").await?, 0);
 
     FileEntry::insert(
         &pool,
         &FileEntry {
+            host_id: "test-host".to_string(),
             key: "counted.txt".to_string(),
             etag: "e1".to_string(),
             size: 10,
@@ -346,14 +361,15 @@ async fn test_file_entry_count() -> Result<()> {
             content_type: None,
             file_type: "txt".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
     )
     .await?;
-    assert_eq!(FileEntry::count(&pool).await?, 1);
+    assert_eq!(FileEntry::count(&pool, "test-host").await?, 1);
 
-    FileEntry::mark_deleted(&pool, "counted.txt").await?;
-    assert_eq!(FileEntry::count(&pool).await?, 0);
+    FileEntry::mark_deleted(&pool, "test-host", "counted.txt").await?;
+    assert_eq!(FileEntry::count(&pool, "test-host").await?, 0);
 
     Ok(())
 }
@@ -361,9 +377,9 @@ async fn test_file_entry_count() -> Result<()> {
 #[tokio::test]
 async fn test_file_entry_get_not_found() -> Result<()> {
     let (pool, _dir) = setup_db().await?;
-    let result = FileEntry::get_by_key(&pool, "nonexistent").await;
+    let result = FileEntry::get_by_key(&pool, "test-host", "nonexistent").await;
     assert!(result.is_err());
-    assert!(matches!(result, Err(OssgalleyError::NotFound(_))));
+    assert!(matches!(result, Err(S3GalleryError::NotFound(_))));
     Ok(())
 }
 
@@ -451,7 +467,7 @@ async fn test_thumbnail_entry_full_crud() -> Result<()> {
     ThumbnailEntry::delete(&pool, "base/file.jpg").await?;
     let result = ThumbnailEntry::get(&pool, "base/file.jpg").await;
     assert!(result.is_err());
-    assert!(matches!(result, Err(OssgalleyError::NotFound(_))));
+    assert!(matches!(result, Err(S3GalleryError::NotFound(_))));
 
     Ok(())
 }
@@ -486,7 +502,7 @@ async fn test_tag_entry_full_crud() -> Result<()> {
     // Get by name not found
     let result = TagEntry::get_by_name(&pool, "nonexistent").await;
     assert!(result.is_err());
-    assert!(matches!(result, Err(OssgalleyError::NotFound(_))));
+    assert!(matches!(result, Err(S3GalleryError::NotFound(_))));
 
     Ok(())
 }
@@ -541,12 +557,13 @@ async fn test_scan_metadata_crud() -> Result<()> {
     let (pool, _dir) = setup_db().await?;
 
     // Initial state after migration
-    let fetched = ScanMetadata::get(&pool).await?;
+    let fetched = ScanMetadata::get(&pool, "default").await?;
     assert_eq!(fetched.db_schema_version, 1);
     assert!(fetched.last_scanned_key.is_none());
 
     // Update
     let updated = ScanMetadata {
+        host_id: "default".to_string(),
         last_scanned_key: Some("integration/last-file.txt".to_string()),
         last_scanned_at: Some("2026-07-20T00:00:00Z".to_string()),
         total_files: Some(42),
@@ -555,7 +572,7 @@ async fn test_scan_metadata_crud() -> Result<()> {
     };
     ScanMetadata::update(&pool, &updated).await?;
 
-    let fetched = ScanMetadata::get(&pool).await?;
+    let fetched = ScanMetadata::get(&pool, "default").await?;
     assert_eq!(
         fetched.last_scanned_key,
         Some("integration/last-file.txt".to_string())
@@ -571,12 +588,13 @@ async fn test_scan_metadata_crud() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_foreign_key_violation_on_metadata() -> Result<()> {
+async fn test_metadata_insert_without_file() -> Result<()> {
     let (pool, _dir) = setup_db().await?;
 
-    // Try to insert metadata referencing a non-existent file.
+    // Metadata no longer has a foreign key constraint on files, so inserting
+    // metadata without a corresponding file entry should succeed.
     let meta = MetadataEntry {
-        file_key: "nonexistent-file".to_string(),
+        file_key: "orphan-file".to_string(),
         namespace: "exif".to_string(),
         key: "Make".to_string(),
         value: "Canon".to_string(),
@@ -584,15 +602,17 @@ async fn test_foreign_key_violation_on_metadata() -> Result<()> {
         partial: false,
     };
     let result = MetadataEntry::insert(&pool, &meta).await;
-    assert!(result.is_err(), "foreign key violation should fail");
+    assert!(
+        result.is_ok(),
+        "metadata insert without file should succeed: {result:?}"
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn test_cascade_delete_on_file_removal() -> Result<()> {
-    // SQLite with foreign keys ON does not cascade deletes unless the schema
-    // specifies ON DELETE CASCADE.  Our schema specifies ON DELETE CASCADE for
-    // metadata and thumbnails.  Test that soft-deleting a file does not cascade.
+    // Metadata no longer has a foreign key constraint on files, so soft-deleting
+    // a file does not cascade to metadata.
     let (pool, _dir) = setup_db().await?;
     insert_base_file(&pool).await?;
 
@@ -608,11 +628,15 @@ async fn test_cascade_delete_on_file_removal() -> Result<()> {
     MetadataEntry::insert(&pool, &meta).await?;
 
     // Soft-delete the file.
-    FileEntry::mark_deleted(&pool, "base/file.jpg").await?;
+    FileEntry::mark_deleted(&pool, "test-host", "base/file.jpg").await?;
 
     // Metadata should still exist (soft delete doesn't cascade).
     let results = MetadataEntry::get_by_file_key(&pool, "base/file.jpg").await?;
-    assert_eq!(results.len(), 1, "soft delete should not cascade to metadata");
+    assert_eq!(
+        results.len(),
+        1,
+        "soft delete should not cascade to metadata"
+    );
 
     Ok(())
 }
@@ -623,8 +647,7 @@ async fn test_cascade_delete_on_file_removal() -> Result<()> {
 
 #[tokio::test]
 async fn test_create_pool_creates_db_file() -> Result<()> {
-    let dir = tempfile::tempdir()
-        .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+    let dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     let db_path = dir.path().join("newly_created.db");
     assert!(!db_path.exists());
 
@@ -646,7 +669,7 @@ async fn test_pool_accepts_multiple_connections() -> Result<()> {
     let result: i64 = sqlx::query_scalar("SELECT 1 + 1")
         .fetch_one(&pool)
         .await
-        .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     assert_eq!(result, 2);
     Ok(())
@@ -661,7 +684,7 @@ async fn test_all_indexes_created() -> Result<()> {
     )
     .fetch_all(&pool)
     .await
-    .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+    .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     let expected = [
         "idx_files_file_type",
