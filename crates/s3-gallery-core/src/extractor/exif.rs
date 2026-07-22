@@ -50,7 +50,7 @@ impl ExifExtractor {
     /// looks for the EXIF marker and ignores all other segments.
     fn find_exif_in_jpeg(data: &[u8]) -> Option<Vec<u8>> {
         // Check JPEG SOI (0xFF 0xD8)
-        if data.get(0).copied() != Some(0xFF) || data.get(1).copied() != Some(0xD8) {
+        if data.first().copied() != Some(0xFF) || data.get(1).copied() != Some(0xD8) {
             return None;
         }
 

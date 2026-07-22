@@ -103,7 +103,7 @@ pub fn parse_exposure_time(s: &str) -> f64 {
 pub fn parse_dms(s: &str) -> f64 {
     let parts: Vec<&str> = s.split_whitespace().collect();
     if parts.len() >= 5 {
-        let deg: f64 = parts.get(0).copied().unwrap_or("0").parse().unwrap_or(0.0);
+        let deg: f64 = parts.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
         let min: f64 = parts.get(2).copied().unwrap_or("0").parse().unwrap_or(0.0);
         let sec: f64 = parts.get(4).copied().unwrap_or("0").parse().unwrap_or(0.0);
         deg + min / 60.0 + sec / 3600.0
