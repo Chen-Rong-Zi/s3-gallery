@@ -1,0 +1,12 @@
+[package]
+name = "s3-gallery-web"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+s3-gallery-core = { path = "../s3-gallery-core" }
+minijinja = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+serde_json = "1.0"

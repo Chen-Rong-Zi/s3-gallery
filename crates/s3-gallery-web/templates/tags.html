@@ -1,0 +1,10 @@
+{% extends "layout.html" %}
+{% block title %}Tags - s3-gallery{% endblock %}
+{% block content %}
+<h1>Tags</h1>
+<ul>
+    {% for tag in tags %}
+    <li><a href="/search?tag={{ tag.tag_name }}">{{ tag.tag_name }}</a></li>
+    {% endfor %}
+</ul>
+{% endblock %}

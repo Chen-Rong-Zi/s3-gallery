@@ -1,0 +1,26 @@
+{% for group in groups %}
+<h2>{{ group.date }} ({{ group.count }})</h2>
+<div class="gallery-grid">
+    {% for item in group.items %}
+    <div class="gallery-item">
+        <a href="/files/{{ item.key }}">
+            <img class="thumbnail" src="{{ item.thumbnail_url }}" loading="lazy" alt="{{ item.name }}">
+        </a>
+        <div class="gallery-item-name">{{ item.name }}</div>
+        <div class="gallery-item-meta">
+            <span class="host-badge">{{ item.host_id }}</span>
+            <span class="file-type">{{ item.file_type }}</span>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endfor %}
+
+{% if has_more %}
+<div class="gallery-load-more"
+     hx-get="/gallery?page={{ page + 1 }}{% if tag %}&tag={{ tag }}{% endif %}"
+     hx-trigger="revealed"
+     hx-swap="outerHTML">
+    Loading more...
+</div>
+{% endif %}

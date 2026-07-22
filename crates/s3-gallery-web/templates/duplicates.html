@@ -1,0 +1,20 @@
+{% extends "layout.html" %}
+{% block title %}Duplicates - s3-gallery{% endblock %}
+{% block content %}
+<h1>Duplicate Files</h1>
+{% if groups %}
+    {% for group in groups %}
+    <h2>Duplicate Group ({{ group.size }})</h2>
+    <ul>
+        {% for file in group.files %}
+        <li>
+            <span style="font-size:0.8em;color:#666;background:#eee;padding:2px 6px;border-radius:3px;margin-right:4px;">{{ file.host_id }}</span>
+            <a href="/files/{{ file.key }}">{{ file.key }}</a>
+        </li>
+        {% endfor %}
+    </ul>
+    {% endfor %}
+{% else %}
+<p>No duplicate files found.</p>
+{% endif %}
+{% endblock %}

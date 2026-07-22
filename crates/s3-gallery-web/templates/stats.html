@@ -1,0 +1,31 @@
+{% extends "layout.html" %}
+{% block title %}Stats - s3-gallery{% endblock %}
+{% block content %}
+<h1>Statistics</h1>
+
+<h2>Total (All Hosts)</h2>
+<table>
+    <tr><th>Total files</th><td>{{ totals.total_files }}</td></tr>
+    <tr><th>Total size</th><td>{{ totals.total_size }}</td></tr>
+</table>
+<h3>By Category</h3>
+<table>
+    {% for item in totals.by_category %}
+    <tr><td>{{ item.name }}</td><td>{{ item.count }}</td></tr>
+    {% endfor %}
+</table>
+
+<h2>Per Host</h2>
+{% for host in per_host %}
+<h3>{{ host.host_id }}</h3>
+<table>
+    <tr><th>Total files</th><td>{{ host.stats.total_files }}</td></tr>
+    <tr><th>Total size</th><td>{{ host.stats.total_size }}</td></tr>
+</table>
+<table>
+    {% for item in host.stats.by_category %}
+    <tr><td>{{ item.name }}</td><td>{{ item.count }}</td></tr>
+    {% endfor %}
+</table>
+{% endfor %}
+{% endblock %}
