@@ -142,7 +142,9 @@ impl S3Client for RealS3Client {
                 if let Some(service_err) = e.as_service_error() {
                     let code = service_err.code().unwrap_or("unknown");
                     let msg = service_err.message().unwrap_or("no message");
-                    S3GalleryError::S3Error(format!("{code}: {msg} (bucket={bucket_name}, key={key_str})"))
+                    S3GalleryError::S3Error(format!(
+                        "{code}: {msg} (bucket={bucket_name}, key={key_str})"
+                    ))
                 } else {
                     S3GalleryError::S3Error(format!("{} (bucket={bucket_name}, key={key_str})", e))
                 }

@@ -85,10 +85,7 @@ pub async fn thumbnail(
             return (
                 StatusCode::NOT_FOUND,
                 [("content-type", "application/json")],
-                format!(
-                    "{{\"error\":\"host not found\",\"detail\":\"{host_id}\"}}"
-                )
-                .into_bytes(),
+                format!("{{\"error\":\"host not found\",\"detail\":\"{host_id}\"}}").into_bytes(),
             )
                 .into_response();
         }
@@ -102,10 +99,7 @@ pub async fn thumbnail(
             return (
                 StatusCode::BAD_REQUEST,
                 [("content-type", "application/json")],
-                format!(
-                    "{{\"error\":\"invalid key\",\"detail\":\"{e}\"}}"
-                )
-                .into_bytes(),
+                format!("{{\"error\":\"invalid key\",\"detail\":\"{e}\"}}").into_bytes(),
             )
                 .into_response();
         }
@@ -117,10 +111,7 @@ pub async fn thumbnail(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("content-type", "application/json")],
-                format!(
-                    "{{\"error\":\"invalid bucket\",\"detail\":\"{e}\"}}"
-                )
-                .into_bytes(),
+                format!("{{\"error\":\"invalid bucket\",\"detail\":\"{e}\"}}").into_bytes(),
             )
                 .into_response();
         }
@@ -132,10 +123,7 @@ pub async fn thumbnail(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("content-type", "application/json")],
-                format!(
-                    "{{\"error\":\"no S3 client\",\"detail\":\"{host_id}\"}}"
-                )
-                .into_bytes(),
+                format!("{{\"error\":\"no S3 client\",\"detail\":\"{host_id}\"}}").into_bytes(),
             )
                 .into_response();
         }
@@ -175,10 +163,8 @@ pub async fn thumbnail(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     [("content-type", "application/json")],
-                    format!(
-                        "{{\"error\":\"thumbnail generation failed\",\"detail\":\"{e}\"}}"
-                    )
-                    .into_bytes(),
+                    format!("{{\"error\":\"thumbnail generation failed\",\"detail\":\"{e}\"}}")
+                        .into_bytes(),
                 )
                     .into_response()
             }
@@ -188,10 +174,7 @@ pub async fn thumbnail(
             (
                 StatusCode::NOT_FOUND,
                 [("content-type", "application/json")],
-                format!(
-                    "{{\"error\":\"file not found\",\"detail\":\"{key}\"}}"
-                )
-                .into_bytes(),
+                format!("{{\"error\":\"file not found\",\"detail\":\"{key}\"}}").into_bytes(),
             )
                 .into_response()
         }

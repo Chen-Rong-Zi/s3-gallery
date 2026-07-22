@@ -47,7 +47,12 @@ pub fn evaluate_rule(
     let values: Vec<&str> = rule
         .keys
         .iter()
-        .filter_map(|k| metadata.iter().find(|m| m.key == *k).map(|m| m.value.as_str()))
+        .filter_map(|k| {
+            metadata
+                .iter()
+                .find(|m| m.key == *k)
+                .map(|m| m.value.as_str())
+        })
         .collect();
     if values.len() != rule.keys.len() {
         return None;
@@ -113,7 +118,11 @@ pub fn parse_dms(s: &str) -> f64 {
 }
 
 pub fn gcd(a: u32, b: u32) -> u32 {
-    if b == 0 { a } else { gcd(b, a % b) }
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
 }
 
 #[inline]
@@ -123,7 +132,12 @@ pub fn rule(
     value: TagValue,
     if_file_type: Option<&'static str>,
 ) -> TagRule {
-    TagRule { prefix, keys, value, if_file_type }
+    TagRule {
+        prefix,
+        keys,
+        value,
+        if_file_type,
+    }
 }
 
 impl TagRule {
@@ -175,184 +189,416 @@ impl TagRule {
             rule("custom", &["CustomRendered"], Pattern("{0}"), None),
             rule("composite", &["CompositeImage"], Pattern("{0}"), None),
             // 连续→离散：焦距
-            rule("focal", &["FocalLengthIn35mmFilm"], Compute(|vals| {
-                let f: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match f {
-                    _ if f < 20.0 => "ultrawide",
-                    _ if f < 35.0 => "wide",
-                    _ if f < 70.0 => "normal",
-                    _ if f < 200.0 => "tele",
-                    _ => "supertele",
-                }.to_string()
-            }), None),
-            rule("focal", &["FocalLength"], Compute(|vals| {
-                let f: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match f {
-                    _ if f < 20.0 => "ultrawide",
-                    _ if f < 35.0 => "wide",
-                    _ if f < 70.0 => "normal",
-                    _ if f < 200.0 => "tele",
-                    _ => "supertele",
-                }.to_string()
-            }), None),
+            rule(
+                "focal",
+                &["FocalLengthIn35mmFilm"],
+                Compute(|vals| {
+                    let f: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match f {
+                        _ if f < 20.0 => "ultrawide",
+                        _ if f < 35.0 => "wide",
+                        _ if f < 70.0 => "normal",
+                        _ if f < 200.0 => "tele",
+                        _ => "supertele",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
+            rule(
+                "focal",
+                &["FocalLength"],
+                Compute(|vals| {
+                    let f: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match f {
+                        _ if f < 20.0 => "ultrawide",
+                        _ if f < 35.0 => "wide",
+                        _ if f < 70.0 => "normal",
+                        _ if f < 200.0 => "tele",
+                        _ => "supertele",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // 连续→离散：光圈
-            rule("aperture", &["FNumber"], Compute(|vals| {
-                let f: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match f {
-                    _ if f <= 2.0 => "fast",
-                    _ if f <= 2.8 => "bright",
-                    _ if f <= 5.6 => "medium",
-                    _ => "narrow",
-                }.to_string()
-            }), None),
+            rule(
+                "aperture",
+                &["FNumber"],
+                Compute(|vals| {
+                    let f: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match f {
+                        _ if f <= 2.0 => "fast",
+                        _ if f <= 2.8 => "bright",
+                        _ if f <= 5.6 => "medium",
+                        _ => "narrow",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // 连续→离散：快门
-            rule("shutter", &["ExposureTime"], Compute(|vals| {
-                let t = parse_exposure_time(vals.first().copied().unwrap_or(""));
-                match t {
-                    _ if t > 1.0 => "long",
-                    _ if t > 1.0 / 30.0 => "slow",
-                    _ if t > 1.0 / 250.0 => "normal",
-                    _ if t > 1.0 / 4000.0 => "fast",
-                    _ => "ultrafast",
-                }.to_string()
-            }), None),
+            rule(
+                "shutter",
+                &["ExposureTime"],
+                Compute(|vals| {
+                    let t = parse_exposure_time(vals.first().copied().unwrap_or(""));
+                    match t {
+                        _ if t > 1.0 => "long",
+                        _ if t > 1.0 / 30.0 => "slow",
+                        _ if t > 1.0 / 250.0 => "normal",
+                        _ if t > 1.0 / 4000.0 => "fast",
+                        _ => "ultrafast",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // 连续→离散：ISO
-            rule("iso", &["PhotographicSensitivity"], Compute(|vals| {
-                let iso: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match iso {
-                    _ if iso < 200.0 => "low",
-                    _ if iso < 800.0 => "medium",
-                    _ if iso < 6400.0 => "high",
-                    _ => "extreme",
-                }.to_string()
-            }), None),
+            rule(
+                "iso",
+                &["PhotographicSensitivity"],
+                Compute(|vals| {
+                    let iso: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match iso {
+                        _ if iso < 200.0 => "low",
+                        _ if iso < 800.0 => "medium",
+                        _ if iso < 6400.0 => "high",
+                        _ => "extreme",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // 连续→离散：曝光补偿
-            rule("exposure_bias", &["ExposureBiasValue"], Compute(|vals| {
-                let bias: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match bias {
-                    _ if bias < -0.5 => "negative",
-                    _ if bias > 0.5 => "positive",
-                    _ => "normal",
-                }.to_string()
-            }), None),
+            rule(
+                "exposure_bias",
+                &["ExposureBiasValue"],
+                Compute(|vals| {
+                    let bias: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match bias {
+                        _ if bias < -0.5 => "negative",
+                        _ if bias > 0.5 => "positive",
+                        _ => "normal",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // 连续→离散：亮度
-            rule("brightness", &["BrightnessValue"], Compute(|vals| {
-                let bv: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match bv {
-                    _ if bv < 0.0 => "dark",
-                    _ if bv < 5.0 => "dim",
-                    _ if bv < 10.0 => "normal",
-                    _ => "bright",
-                }.to_string()
-            }), None),
+            rule(
+                "brightness",
+                &["BrightnessValue"],
+                Compute(|vals| {
+                    let bv: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match bv {
+                        _ if bv < 0.0 => "dark",
+                        _ if bv < 5.0 => "dim",
+                        _ if bv < 10.0 => "normal",
+                        _ => "bright",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // 连续→离散：拍摄距离
-            rule("distance_m", &["SubjectDistance"], Compute(|vals| {
-                let d: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match d {
-                    _ if d < 0.3 => "macro",
-                    _ if d < 3.0 => "near",
-                    _ if d < 20.0 => "distant",
-                    _ => "infinity",
-                }.to_string()
-            }), None),
+            rule(
+                "distance_m",
+                &["SubjectDistance"],
+                Compute(|vals| {
+                    let d: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match d {
+                        _ if d < 0.3 => "macro",
+                        _ if d < 3.0 => "near",
+                        _ if d < 20.0 => "distant",
+                        _ => "infinity",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // 连续→离散：数码变焦
-            rule("digital_zoom", &["DigitalZoomRatio"], Compute(|vals| {
-                let z: f64 = vals.first().copied().unwrap_or("1").parse().unwrap_or(1.0);
-                match z {
-                    _ if z <= 1.0 => "none",
-                    _ if z <= 2.0 => "moderate",
-                    _ => "heavy",
-                }.to_string()
-            }), None),
+            rule(
+                "digital_zoom",
+                &["DigitalZoomRatio"],
+                Compute(|vals| {
+                    let z: f64 = vals.first().copied().unwrap_or("1").parse().unwrap_or(1.0);
+                    match z {
+                        _ if z <= 1.0 => "none",
+                        _ if z <= 2.0 => "moderate",
+                        _ => "heavy",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // 连续→离散：宽高比
-            rule("aspect", &["PixelXDimension", "PixelYDimension"], Compute(|vals| {
-                let w: u32 = vals.first().copied().unwrap_or("1").parse().unwrap_or(1);
-                let h: u32 = vals.get(1).copied().unwrap_or("1").parse().unwrap_or(1);
-                let g = gcd(w, h);
-                format!("{}:{}", w / g, h / g)
-            }), None),
+            rule(
+                "aspect",
+                &["PixelXDimension", "PixelYDimension"],
+                Compute(|vals| {
+                    let w: u32 = vals.first().copied().unwrap_or("1").parse().unwrap_or(1);
+                    let h: u32 = vals.get(1).copied().unwrap_or("1").parse().unwrap_or(1);
+                    let g = gcd(w, h);
+                    format!("{}:{}", w / g, h / g)
+                }),
+                None,
+            ),
             // 连续→离散：分辨率
-            rule("resolution", &["XResolution"], Compute(|vals| {
-                let dpi: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match dpi {
-                    _ if dpi < 150.0 => "draft",
-                    _ if dpi < 300.0 => "standard",
-                    _ => "high",
-                }.to_string()
-            }), None),
+            rule(
+                "resolution",
+                &["XResolution"],
+                Compute(|vals| {
+                    let dpi: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match dpi {
+                        _ if dpi < 150.0 => "draft",
+                        _ if dpi < 300.0 => "standard",
+                        _ => "high",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // 时间维度
-            rule("date", &["DateTimeOriginal"], Compute(|vals| {
-                vals.first().copied().unwrap_or("").get(..10).unwrap_or("").to_string()
-            }), None),
-            rule("year", &["DateTimeOriginal"], Compute(|vals| {
-                vals.first().copied().unwrap_or("").get(..4).unwrap_or("").to_string()
-            }), None),
-            rule("month", &["DateTimeOriginal"], Compute(|vals| {
-                vals.first().copied().unwrap_or("").get(..7).unwrap_or("").to_string()
-            }), None),
-            rule("season", &["DateTimeOriginal"], Compute(|vals| {
-                let m: u32 = vals.first().copied().unwrap_or("").get(5..7).and_then(|s| s.parse().ok()).unwrap_or(0);
-                match m { 3..=5 => "spring", 6..=8 => "summer",
-                          9..=11 => "autumn", _ => "winter" }.to_string()
-            }), None),
-            rule("timeofday", &["DateTimeOriginal"], Compute(|vals| {
-                let h: u32 = vals.first().copied().unwrap_or("").get(11..13).and_then(|s| s.parse().ok()).unwrap_or(0);
-                match h { 4..=6 => "dawn", 7..=10 => "morning", 11..=12 => "midday",
-                          13..=16 => "afternoon", 17..=19 => "dusk", _ => "night" }.to_string()
-            }), None),
+            rule(
+                "date",
+                &["DateTimeOriginal"],
+                Compute(|vals| {
+                    vals.first()
+                        .copied()
+                        .unwrap_or("")
+                        .get(..10)
+                        .unwrap_or("")
+                        .to_string()
+                }),
+                None,
+            ),
+            rule(
+                "year",
+                &["DateTimeOriginal"],
+                Compute(|vals| {
+                    vals.first()
+                        .copied()
+                        .unwrap_or("")
+                        .get(..4)
+                        .unwrap_or("")
+                        .to_string()
+                }),
+                None,
+            ),
+            rule(
+                "month",
+                &["DateTimeOriginal"],
+                Compute(|vals| {
+                    vals.first()
+                        .copied()
+                        .unwrap_or("")
+                        .get(..7)
+                        .unwrap_or("")
+                        .to_string()
+                }),
+                None,
+            ),
+            rule(
+                "season",
+                &["DateTimeOriginal"],
+                Compute(|vals| {
+                    let m: u32 = vals
+                        .first()
+                        .copied()
+                        .unwrap_or("")
+                        .get(5..7)
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
+                    match m {
+                        3..=5 => "spring",
+                        6..=8 => "summer",
+                        9..=11 => "autumn",
+                        _ => "winter",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
+            rule(
+                "timeofday",
+                &["DateTimeOriginal"],
+                Compute(|vals| {
+                    let h: u32 = vals
+                        .first()
+                        .copied()
+                        .unwrap_or("")
+                        .get(11..13)
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
+                    match h {
+                        4..=6 => "dawn",
+                        7..=10 => "morning",
+                        11..=12 => "midday",
+                        13..=16 => "afternoon",
+                        17..=19 => "dusk",
+                        _ => "night",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // 时区
-            rule("timezone", &["OffsetTimeOriginal"], Compute(|vals| {
-                let tz = vals.first().copied().unwrap_or("").trim_matches('"').trim();
-                // "+08:00" → "UTC+8", "-05:00" → "UTC-5"
-                if let Some(rest) = tz.strip_prefix("+") {
-                    format!("UTC+{}", rest.trim_end_matches(":00").trim_end_matches(":0"))
-                } else if let Some(rest) = tz.strip_prefix("-") {
-                    format!("UTC-{}", rest.trim_end_matches(":00").trim_end_matches(":0"))
-                } else {
-                    tz.to_string()
-                }
-            }), None),
+            rule(
+                "timezone",
+                &["OffsetTimeOriginal"],
+                Compute(|vals| {
+                    let tz = vals.first().copied().unwrap_or("").trim_matches('"').trim();
+                    // "+08:00" → "UTC+8", "-05:00" → "UTC-5"
+                    if let Some(rest) = tz.strip_prefix("+") {
+                        format!(
+                            "UTC+{}",
+                            rest.trim_end_matches(":00").trim_end_matches(":0")
+                        )
+                    } else if let Some(rest) = tz.strip_prefix("-") {
+                        format!(
+                            "UTC-{}",
+                            rest.trim_end_matches(":00").trim_end_matches(":0")
+                        )
+                    } else {
+                        tz.to_string()
+                    }
+                }),
+                None,
+            ),
             // 环境参数
-            rule("temperature", &["Temperature"], Compute(|vals| {
-                let t: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match t { _ if t < 5.0 => "cold", _ if t < 20.0 => "mild",
-                          _ if t < 30.0 => "warm", _ => "hot" }.to_string()
-            }), None),
-            rule("humidity", &["Humidity"], Compute(|vals| {
-                let h: f64 = vals.first().copied().unwrap_or("50").parse().unwrap_or(50.0);
-                match h { _ if h < 30.0 => "dry", _ if h < 70.0 => "normal", _ => "humid" }.to_string()
-            }), None),
-            rule("pressure", &["Pressure"], Compute(|vals| {
-                let p: f64 = vals.first().copied().unwrap_or("1013").parse().unwrap_or(1013.0);
-                match p { _ if p < 1000.0 => "low", _ if p < 1020.0 => "normal", _ => "high" }.to_string()
-            }), None),
+            rule(
+                "temperature",
+                &["Temperature"],
+                Compute(|vals| {
+                    let t: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match t {
+                        _ if t < 5.0 => "cold",
+                        _ if t < 20.0 => "mild",
+                        _ if t < 30.0 => "warm",
+                        _ => "hot",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
+            rule(
+                "humidity",
+                &["Humidity"],
+                Compute(|vals| {
+                    let h: f64 = vals
+                        .first()
+                        .copied()
+                        .unwrap_or("50")
+                        .parse()
+                        .unwrap_or(50.0);
+                    match h {
+                        _ if h < 30.0 => "dry",
+                        _ if h < 70.0 => "normal",
+                        _ => "humid",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
+            rule(
+                "pressure",
+                &["Pressure"],
+                Compute(|vals| {
+                    let p: f64 = vals
+                        .first()
+                        .copied()
+                        .unwrap_or("1013")
+                        .parse()
+                        .unwrap_or(1013.0);
+                    match p {
+                        _ if p < 1000.0 => "low",
+                        _ if p < 1020.0 => "normal",
+                        _ => "high",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
             // GPS
-            rule("grid", &["GPSLatitude", "GPSLongitude"], Compute(|vals| {
-                let lat = parse_dms(vals.first().copied().unwrap_or(""));
-                let lon = parse_dms(vals.get(1).copied().unwrap_or(""));
-                format!("{:.2}_{:.2}", (lat * 100.0).round() / 100.0, (lon * 100.0).round() / 100.0)
-            }), None),
-            rule("altitude", &["GPSAltitude"], Compute(|vals| {
-                let a: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match a { _ if a < 50.0 => "sea_level", _ if a < 500.0 => "low",
-                          _ if a < 2000.0 => "medium", _ => "high" }.to_string()
-            }), None),
-            rule("direction", &["GPSImgDirection"], Compute(|vals| {
-                let d: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                let dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-                dirs.get(((d / 45.0).round() as usize) % 8).copied().unwrap_or("N").to_string()
-            }), None),
-            rule("speed", &["GPSSpeed"], Compute(|vals| {
-                let s: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
-                match s { _ if s < 1.0 => "stationary", _ if s < 6.0 => "walking",
-                          _ if s < 15.0 => "running", _ if s < 120.0 => "driving",
-                          _ => "flying" }.to_string()
-            }), None),
-            rule("gps_accuracy", &["GPSDOP"], Compute(|vals| {
-                let d: f64 = vals.first().copied().unwrap_or("99").parse().unwrap_or(99.0);
-                match d { _ if d < 2.0 => "excellent", _ if d < 5.0 => "good",
-                          _ if d < 10.0 => "moderate", _ => "poor" }.to_string()
-            }), None),
+            rule(
+                "grid",
+                &["GPSLatitude", "GPSLongitude"],
+                Compute(|vals| {
+                    let lat = parse_dms(vals.first().copied().unwrap_or(""));
+                    let lon = parse_dms(vals.get(1).copied().unwrap_or(""));
+                    format!(
+                        "{:.2}_{:.2}",
+                        (lat * 100.0).round() / 100.0,
+                        (lon * 100.0).round() / 100.0
+                    )
+                }),
+                None,
+            ),
+            rule(
+                "altitude",
+                &["GPSAltitude"],
+                Compute(|vals| {
+                    let a: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match a {
+                        _ if a < 50.0 => "sea_level",
+                        _ if a < 500.0 => "low",
+                        _ if a < 2000.0 => "medium",
+                        _ => "high",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
+            rule(
+                "direction",
+                &["GPSImgDirection"],
+                Compute(|vals| {
+                    let d: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    let dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+                    dirs.get(((d / 45.0).round() as usize) % 8)
+                        .copied()
+                        .unwrap_or("N")
+                        .to_string()
+                }),
+                None,
+            ),
+            rule(
+                "speed",
+                &["GPSSpeed"],
+                Compute(|vals| {
+                    let s: f64 = vals.first().copied().unwrap_or("0").parse().unwrap_or(0.0);
+                    match s {
+                        _ if s < 1.0 => "stationary",
+                        _ if s < 6.0 => "walking",
+                        _ if s < 15.0 => "running",
+                        _ if s < 120.0 => "driving",
+                        _ => "flying",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
+            rule(
+                "gps_accuracy",
+                &["GPSDOP"],
+                Compute(|vals| {
+                    let d: f64 = vals
+                        .first()
+                        .copied()
+                        .unwrap_or("99")
+                        .parse()
+                        .unwrap_or(99.0);
+                    match d {
+                        _ if d < 2.0 => "excellent",
+                        _ if d < 5.0 => "good",
+                        _ if d < 10.0 => "moderate",
+                        _ => "poor",
+                    }
+                    .to_string()
+                }),
+                None,
+            ),
         ]
     }
 }
@@ -365,11 +611,15 @@ mod tests {
     #[test]
     fn test_evaluate_rule_pattern() {
         let rule = TagRule {
-            prefix: "camera", keys: &["Make"],
-            value: TagValue::Pattern("{0}"), if_file_type: None,
+            prefix: "camera",
+            keys: &["Make"],
+            value: TagValue::Pattern("{0}"),
+            if_file_type: None,
         };
         let metadata = [MetadataItem {
-            namespace: "exif", key: "Make".into(), value: "Canon".into(),
+            namespace: "exif",
+            key: "Make".into(),
+            value: "Canon".into(),
         }];
         let result = evaluate_rule(&rule, &metadata, "jpeg");
         assert!(result.is_some());
@@ -379,17 +629,27 @@ mod tests {
     #[test]
     fn test_evaluate_rule_compute() {
         let rule = TagRule {
-            prefix: "aspect", keys: &["PixelXDimension", "PixelYDimension"],
+            prefix: "aspect",
+            keys: &["PixelXDimension", "PixelYDimension"],
             value: TagValue::Compute(|vals| {
                 let w: u32 = vals[0].parse().unwrap();
                 let h: u32 = vals[1].parse().unwrap();
                 let g = gcd(w, h);
-                format!("{}:{}", w/g, h/g)
-            }), if_file_type: None,
+                format!("{}:{}", w / g, h / g)
+            }),
+            if_file_type: None,
         };
         let metadata = [
-            MetadataItem { namespace: "exif", key: "PixelXDimension".into(), value: "1920".into() },
-            MetadataItem { namespace: "exif", key: "PixelYDimension".into(), value: "1080".into() },
+            MetadataItem {
+                namespace: "exif",
+                key: "PixelXDimension".into(),
+                value: "1920".into(),
+            },
+            MetadataItem {
+                namespace: "exif",
+                key: "PixelYDimension".into(),
+                value: "1080".into(),
+            },
         ];
         let result = evaluate_rule(&rule, &metadata, "jpeg");
         assert!(result.is_some());
@@ -399,11 +659,15 @@ mod tests {
     #[test]
     fn test_evaluate_rule_file_type_filter() {
         let rule = TagRule {
-            prefix: "", keys: &["file_type"],
-            value: TagValue::Pattern("image"), if_file_type: Some("jpeg"),
+            prefix: "",
+            keys: &["file_type"],
+            value: TagValue::Pattern("image"),
+            if_file_type: Some("jpeg"),
         };
         let metadata = [MetadataItem {
-            namespace: "exif", key: "file_type".into(), value: "jpeg".into(),
+            namespace: "exif",
+            key: "file_type".into(),
+            value: "jpeg".into(),
         }];
         assert!(evaluate_rule(&rule, &metadata, "jpeg").is_some());
         assert!(evaluate_rule(&rule, &metadata, "mp4").is_none());
@@ -412,8 +676,10 @@ mod tests {
     #[test]
     fn test_evaluate_rule_missing_key_returns_none() {
         let rule = TagRule {
-            prefix: "camera", keys: &["Make"],
-            value: TagValue::Pattern("{0}"), if_file_type: None,
+            prefix: "camera",
+            keys: &["Make"],
+            value: TagValue::Pattern("{0}"),
+            if_file_type: None,
         };
         let metadata = [];
         assert!(evaluate_rule(&rule, &metadata, "jpeg").is_none());
@@ -423,11 +689,31 @@ mod tests {
     fn test_evaluate_all_returns_multiple_tags() {
         let rules = TagRule::default_rules();
         let metadata = [
-            MetadataItem { namespace: "exif", key: "file_type".into(), value: "jpeg".into() },
-            MetadataItem { namespace: "exif", key: "Make".into(), value: "Canon".into() },
-            MetadataItem { namespace: "exif", key: "Model".into(), value: "EOS R5".into() },
-            MetadataItem { namespace: "exif", key: "PixelXDimension".into(), value: "1920".into() },
-            MetadataItem { namespace: "exif", key: "PixelYDimension".into(), value: "1080".into() },
+            MetadataItem {
+                namespace: "exif",
+                key: "file_type".into(),
+                value: "jpeg".into(),
+            },
+            MetadataItem {
+                namespace: "exif",
+                key: "Make".into(),
+                value: "Canon".into(),
+            },
+            MetadataItem {
+                namespace: "exif",
+                key: "Model".into(),
+                value: "EOS R5".into(),
+            },
+            MetadataItem {
+                namespace: "exif",
+                key: "PixelXDimension".into(),
+                value: "1920".into(),
+            },
+            MetadataItem {
+                namespace: "exif",
+                key: "PixelYDimension".into(),
+                value: "1080".into(),
+            },
         ];
         let tags = evaluate_all(&rules, &metadata, "jpeg");
         assert!(tags.iter().any(|t| t.tag_name == "image"));

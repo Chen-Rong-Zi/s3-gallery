@@ -66,16 +66,20 @@ fn render_template(
 ) -> Result<Html<String>, Box<Response>> {
     let template = state.templates.get_template(template_name).map_err(|e| {
         Box::new(
-            (StatusCode::INTERNAL_SERVER_ERROR,
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "template not found", "detail": e.to_string()})),
-            ).into_response(),
+            )
+                .into_response(),
         )
     })?;
     let html = template.render(context).map_err(|e| {
         Box::new(
-            (StatusCode::INTERNAL_SERVER_ERROR,
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "template rendering failed", "detail": e.to_string()})),
-            ).into_response(),
+            )
+                .into_response(),
         )
     })?;
     Ok(Html(html))
@@ -104,43 +108,61 @@ pub async fn gallery(
     let pool = &state.db;
 
     let (entries, has_more) = match timeline_gallery::get_timeline_gallery(
-        pool, params.host_id.as_deref(), page, GROUPS_PER_PAGE, tag,
-    ).await {
+        pool,
+        params.host_id.as_deref(),
+        page,
+        GROUPS_PER_PAGE,
+        tag,
+    )
+    .await
+    {
         Ok(result) => result,
         Err(e) => {
             tracing::error!(handler = "gallery", error = %e, "failed to get timeline gallery");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "failed to get gallery", "detail": e.to_string()})),
-            ).into_response();
+            )
+                .into_response();
         }
     };
 
-    let groups: Vec<TimelineGroup> = entries.iter().map(|entry| {
-        let items: Vec<GalleryItem> = entry.files.iter().map(|f| {
-            let name = file_name_from_key(&f.key);
-            GalleryItem {
-                key: f.key.clone(),
-                name,
-                thumbnail_url: format!("/thumbnails/{}", f.key),
-                host_id: f.host_id.clone(),
-                file_type: f.file_type.clone(),
-                size: f.size,
-                last_modified: f.last_modified.clone(),
+    let groups: Vec<TimelineGroup> = entries
+        .iter()
+        .map(|entry| {
+            let items: Vec<GalleryItem> = entry
+                .files
+                .iter()
+                .map(|f| {
+                    let name = file_name_from_key(&f.key);
+                    GalleryItem {
+                        key: f.key.clone(),
+                        name,
+                        thumbnail_url: format!("/thumbnails/{}", f.key),
+                        host_id: f.host_id.clone(),
+                        file_type: f.file_type.clone(),
+                        size: f.size,
+                        last_modified: f.last_modified.clone(),
+                    }
+                })
+                .collect();
+            TimelineGroup {
+                date: entry.date.clone(),
+                count: entry.count,
+                items,
             }
-        }).collect();
-        TimelineGroup {
-            date: entry.date.clone(),
-            count: entry.count,
-            items,
-        }
-    }).collect();
+        })
+        .collect();
 
     // Fetch all tags for the filter dropdown
-    let all_tags: Vec<serde_json::Value> = match s3_gallery_core::view::tags::list_tags(pool, params.host_id.as_deref()).await {
-        Ok(tags) => tags.iter().map(|t| json!({ "name": t.tag_name, "type": t.tag_type })).collect(),
-        Err(_) => Vec::new(),
-    };
+    let all_tags: Vec<serde_json::Value> =
+        match s3_gallery_core::view::tags::list_tags(pool, params.host_id.as_deref()).await {
+            Ok(tags) => tags
+                .iter()
+                .map(|t| json!({ "name": t.tag_name, "type": t.tag_type }))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
 
     let context = build_context(&groups, page, has_more, tag, &all_tags);
 
@@ -149,7 +171,11 @@ pub async fn gallery(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v == "true");
 
-    let template_name = if is_htmx { "gallery_items.html" } else { "gallery.html" };
+    let template_name = if is_htmx {
+        "gallery_items.html"
+    } else {
+        "gallery.html"
+    };
 
     match render_template(&state, template_name, &context) {
         Ok(html) => html.into_response(),

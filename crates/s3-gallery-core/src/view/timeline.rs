@@ -23,10 +23,7 @@ pub struct TimelineEntry {
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn get_timeline(
-    db: &SqlitePool,
-    host_id: Option<&str>,
-) -> Result<Vec<TimelineEntry>> {
+pub async fn get_timeline(db: &SqlitePool, host_id: Option<&str>) -> Result<Vec<TimelineEntry>> {
     let files: Vec<FileEntry> = if let Some(hid) = host_id {
         sqlx::query_as(
             "SELECT * FROM files WHERE host_id = ? AND is_deleted = 0 ORDER BY last_modified DESC",
@@ -36,12 +33,10 @@ pub async fn get_timeline(
         .await
         .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
     } else {
-        sqlx::query_as(
-            "SELECT * FROM files WHERE is_deleted = 0 ORDER BY last_modified DESC",
-        )
-        .fetch_all(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
+        sqlx::query_as("SELECT * FROM files WHERE is_deleted = 0 ORDER BY last_modified DESC")
+            .fetch_all(db)
+            .await
+            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
     };
 
     let mut grouped: BTreeMap<String, Vec<FileEntry>> = BTreeMap::new();

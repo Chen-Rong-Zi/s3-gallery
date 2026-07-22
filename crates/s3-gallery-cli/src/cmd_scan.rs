@@ -51,12 +51,18 @@ async fn setup_db_pool(cli: &Cli) -> Result<SqlitePool> {
     Ok(pool)
 }
 
-pub async fn run_init(cli: &Cli, prefix: Option<String>, opts: ScanOptions, confirm: bool) -> Result<()> {
+pub async fn run_init(
+    cli: &Cli,
+    prefix: Option<String>,
+    opts: ScanOptions,
+    confirm: bool,
+) -> Result<()> {
     // Check if local DB already exists
     if cli.db_path.exists() && !confirm {
-        return Err(S3GalleryError::Internal(
-            format!("Local database exists at '{}'. Use --confirm to overwrite.", cli.db_path.display())
-        ));
+        return Err(S3GalleryError::Internal(format!(
+            "Local database exists at '{}'. Use --confirm to overwrite.",
+            cli.db_path.display()
+        )));
     }
 
     // If --confirm, remove existing DB file
@@ -74,9 +80,10 @@ pub async fn run_init(cli: &Cli, prefix: Option<String>, opts: ScanOptions, conf
 pub async fn run_update(cli: &Cli, prefix: Option<String>, opts: ScanOptions) -> Result<()> {
     // Check that local DB exists
     if !cli.db_path.exists() {
-        return Err(S3GalleryError::NotFound(
-            format!("No local database at '{}'. Run 's3-gallery scan init' first.", cli.db_path.display())
-        ));
+        return Err(S3GalleryError::NotFound(format!(
+            "No local database at '{}'. Run 's3-gallery scan init' first.",
+            cli.db_path.display()
+        )));
     }
 
     let (bucket, s3, bucket_str) = setup_scan_common(cli).await?;
@@ -141,22 +148,24 @@ async fn run_scan_core(
 
     if let Some(data) = root_config {
         // CASE 1: Root has config → scan entire scope as a single host
-        let host: HostIdentifier = serde_json::from_slice(&data)
-            .map_err(|e| S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}")))?;
+        let host: HostIdentifier = serde_json::from_slice(&data).map_err(|e| {
+            S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}"))
+        })?;
 
         tracing::info!(host_id = %host.host_id, name = %host.host_name, "found host config at scope root");
 
         let scan_prefix = ObjectKey::new(scope_prefix_str.clone())
             .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
-        let result = scan_host(
-            s3, pool, bucket, &host, &scan_prefix, opts,
-        )
-        .await?;
+        let result = scan_host(s3, pool, bucket, &host, &scan_prefix, opts).await?;
 
         // Save host config
         HostConfigEntry::upsert_host_config(
-            pool, &host.host_id, bucket_str, &cli.endpoint, &cli.region,
+            pool,
+            &host.host_id,
+            bucket_str,
+            &cli.endpoint,
+            &cli.region,
         )
         .await?;
 
@@ -197,7 +206,8 @@ async fn run_scan_core(
 
         for dir in &subdirs {
             let dir_prefix_str = format!("{}{}/", scope_prefix_str, dir);
-            let dir_config_key_str = format!("{}{}/.s3-gallery/host.config.json", scope_prefix_str, dir);
+            let dir_config_key_str =
+                format!("{}{}/.s3-gallery/host.config.json", scope_prefix_str, dir);
             let dir_config_key = ObjectKey::new(dir_config_key_str)
                 .map_err(|e| S3GalleryError::Internal(format!("Invalid config key: {e}")))?;
 
@@ -205,18 +215,16 @@ async fn run_scan_core(
 
             if let Some(data) = dir_config {
                 // This subdirectory is a host
-                let host: HostIdentifier = serde_json::from_slice(&data)
-                    .map_err(|e| S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}")))?;
+                let host: HostIdentifier = serde_json::from_slice(&data).map_err(|e| {
+                    S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}"))
+                })?;
 
                 tracing::info!(host_id = %host.host_id, name = %host.host_name, dir = %dir, "found host config in subdirectory");
 
                 let scan_prefix = ObjectKey::new(dir_prefix_str.clone())
                     .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
-                let result = scan_host(
-                    s3, pool, bucket, &host, &scan_prefix, opts,
-                )
-                .await?;
+                let result = scan_host(s3, pool, bucket, &host, &scan_prefix, opts).await?;
 
                 total_files += result.total_files;
                 total_new += result.new_files;
@@ -227,11 +235,18 @@ async fn run_scan_core(
 
                 // Save host config
                 HostConfigEntry::upsert_host_config(
-                    pool, &host.host_id, bucket_str, &cli.endpoint, &cli.region,
+                    pool,
+                    &host.host_id,
+                    bucket_str,
+                    &cli.endpoint,
+                    &cli.region,
                 )
                 .await?;
 
-                println!("  Host: {} ({}) — {} files", host.host_name, host.host_id, result.total_files);
+                println!(
+                    "  Host: {} ({}) — {} files",
+                    host.host_name, host.host_id, result.total_files
+                );
             } else {
                 // No host config → scan as regular directory, use dir name as host_id
                 tracing::info!(dir = %dir, "no host config, scanning as regular directory");
@@ -252,10 +267,7 @@ async fn run_scan_core(
                 let scan_prefix = ObjectKey::new(dir_prefix_str.clone())
                     .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
-                let result = scan_host(
-                    s3, pool, bucket, &temp_host, &scan_prefix, opts,
-                )
-                .await?;
+                let result = scan_host(s3, pool, bucket, &temp_host, &scan_prefix, opts).await?;
 
                 total_files += result.total_files;
                 total_new += result.new_files;
@@ -265,11 +277,18 @@ async fn run_scan_core(
 
                 // Save minimal host config (type=auto, no name) for serve to discover
                 HostConfigEntry::upsert_host_config(
-                    pool, dir, bucket_str, &cli.endpoint, &cli.region,
+                    pool,
+                    dir,
+                    bucket_str,
+                    &cli.endpoint,
+                    &cli.region,
                 )
                 .await?;
 
-                println!("  Directory: {} — {} files (no host config)", dir, result.total_files);
+                println!(
+                    "  Directory: {} — {} files (no host config)",
+                    dir, result.total_files
+                );
             }
         }
 
@@ -283,7 +302,10 @@ async fn run_scan_core(
         println!("  Deleted files: {}", total_deleted);
         println!("  Duration: {:.1}s", duration_secs);
         if host_count == 0 {
-            println!("# init: s3-gallery init --bucket {} --prefix <name> --name <display-name>", bucket_str);
+            println!(
+                "# init: s3-gallery init --bucket {} --prefix <name> --name <display-name>",
+                bucket_str
+            );
         }
     }
 

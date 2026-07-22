@@ -9,13 +9,13 @@ use crate::classify::classifier::{
 };
 use crate::db::models::{FileEntry, ScanMetadata};
 use crate::error::{Result, S3GalleryError};
+use crate::extractor::exif::ExifExtractor;
+use crate::extractor::registry::ExtractorRegistry;
+use crate::extractor::tag_rules::TagRule;
 use crate::s3::client::{ObjectSummary, S3Client};
 use crate::s3::lock::acquire_lock;
 use crate::types::{BucketName, FileType, ObjectKey};
 use crate::util::concurrency::ConcurrencyLimiter;
-use crate::extractor::exif::ExifExtractor;
-use crate::extractor::registry::ExtractorRegistry;
-use crate::extractor::tag_rules::TagRule;
 
 /// Configuration for a scan operation.
 pub struct ScanConfig {
@@ -244,12 +244,14 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
         }
 
         // Batch upsert in a transaction
-        let mut tx = config.db.begin().await
-            .map_err(|e| S3GalleryError::DbError(format!("Failed to begin transaction: {e}")))?;
+        let mut tx =
+            config.db.begin().await.map_err(|e| {
+                S3GalleryError::DbError(format!("Failed to begin transaction: {e}"))
+            })?;
         for (dir_path, (total_size, total_files)) in &dir_agg {
             sqlx::query(
                 "INSERT OR REPLACE INTO dir_sizes (host_id, dir_path, total_size, total_files) \
-                 VALUES (?, ?, ?, ?)"
+                 VALUES (?, ?, ?, ?)",
             )
             .bind(&config.host_id)
             .bind(dir_path)
@@ -259,7 +261,8 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
             .await
             .map_err(|e| S3GalleryError::DbError(format!("Failed to upsert dir size: {e}")))?;
         }
-        tx.commit().await
+        tx.commit()
+            .await
             .map_err(|e| S3GalleryError::DbError(format!("Failed to commit transaction: {e}")))?;
 
         tracing::debug!(
@@ -303,7 +306,7 @@ async fn process_file_metadata(
     tag_rules: &[TagRule],
     obj: &ObjectSummary,
 ) -> Result<u64> {
-    use crate::db::models::{MetadataEntry, TagEntry, FileTagEntry};
+    use crate::db::models::{FileTagEntry, MetadataEntry, TagEntry};
     use crate::extractor::tag_rules::evaluate_all;
     use crate::extractor::tag_rules::parse_dms;
 
@@ -318,15 +321,23 @@ async fn process_file_metadata(
     // Check if any extractor supports this file type
     if registry.find(&file_type, ext.as_str()).is_empty() {
         // Mark as extracted so we don't retry on every scan
-        let _result = sqlx::query("UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?")
-            .bind(&config.host_id).bind(key)
-            .execute(&config.db).await;
+        let _result = sqlx::query(
+            "UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?",
+        )
+        .bind(&config.host_id)
+        .bind(key)
+        .execute(&config.db)
+        .await;
         return Ok(0);
     }
 
     // Download only the first 64KB (EXIF data is in the APP1 marker,
     // which is always near the start of the JPEG file)
-    let data = match config.s3.get_object_range(&config.bucket, &obj.key, 0, 65536).await {
+    let data = match config
+        .s3
+        .get_object_range(&config.bucket, &obj.key, 0, 65536)
+        .await
+    {
         Ok(d) => d,
         Err(e) => {
             tracing::warn!(key = %key, error = %e, "failed to download range for metadata extraction");
@@ -340,56 +351,78 @@ async fn process_file_metadata(
         Err(e) => {
             tracing::warn!(key = %key, error = %e, "metadata extraction failed");
             // Mark as failed so we don't retry on every scan
-            let _result = sqlx::query("UPDATE files SET metadata_state = 'failed' WHERE host_id = ? AND key = ?")
-                .bind(&config.host_id).bind(key)
-                .execute(&config.db).await;
+            let _result = sqlx::query(
+                "UPDATE files SET metadata_state = 'failed' WHERE host_id = ? AND key = ?",
+            )
+            .bind(&config.host_id)
+            .bind(key)
+            .execute(&config.db)
+            .await;
             return Ok(0);
         }
     };
 
     if items.is_empty() {
         // Mark as extracted so we don't retry on every scan
-        let _result = sqlx::query("UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?")
-            .bind(&config.host_id).bind(key)
-            .execute(&config.db).await;
+        let _result = sqlx::query(
+            "UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?",
+        )
+        .bind(&config.host_id)
+        .bind(key)
+        .execute(&config.db)
+        .await;
         return Ok(0);
     }
 
     // Store metadata
     let now = Utc::now().to_rfc3339();
     for item in &items {
-        MetadataEntry::insert(&config.db, &MetadataEntry {
-            file_key: key.to_string(),
-            namespace: item.namespace.to_string(),
-            key: item.key.clone(),
-            value: item.value.clone(),
-            extracted_at: now.clone(),
-            partial: false,
-        }).await?;
+        MetadataEntry::insert(
+            &config.db,
+            &MetadataEntry {
+                file_key: key.to_string(),
+                namespace: item.namespace.to_string(),
+                key: item.key.clone(),
+                value: item.value.clone(),
+                extracted_at: now.clone(),
+                partial: false,
+            },
+        )
+        .await?;
     }
 
     // Generate and store tags
     let tags = evaluate_all(tag_rules, &items, &file_type);
     for tag in &tags {
         let tag_id = TagEntry::ensure_exists(&config.db, &tag.tag_name, &tag.tag_type).await?;
-        FileTagEntry::insert(&config.db, &FileTagEntry {
-            file_key: key.to_string(),
-            tag_id,
-        }).await?;
+        FileTagEntry::insert(
+            &config.db,
+            &FileTagEntry {
+                file_key: key.to_string(),
+                tag_id,
+            },
+        )
+        .await?;
     }
 
     // Add exif:yes tag for all files with extracted metadata
     let exif_tag_id = TagEntry::ensure_exists(&config.db, "exif:yes", "auto").await?;
-    FileTagEntry::insert(&config.db, &FileTagEntry {
-        file_key: key.to_string(),
-        tag_id: exif_tag_id,
-    }).await?;
+    FileTagEntry::insert(
+        &config.db,
+        &FileTagEntry {
+            file_key: key.to_string(),
+            tag_id: exif_tag_id,
+        },
+    )
+    .await?;
 
     // Find GPS coordinates in extracted metadata and reverse geocode
-    let gps_lat = items.iter()
+    let gps_lat = items
+        .iter()
         .find(|m| m.key == "GPSLatitude")
         .map(|m| parse_dms(&m.value));
-    let gps_lon = items.iter()
+    let gps_lon = items
+        .iter()
         .find(|m| m.key == "GPSLongitude")
         .map(|m| parse_dms(&m.value));
 
@@ -397,39 +430,47 @@ async fn process_file_metadata(
         let geocoder = crate::extractor::geocode::Geocoder::from_embedded();
         if let Some(location) = geocoder.reverse_geocode(lat, lon) {
             // Add location:city tag
-            let city_tag = TagEntry::ensure_exists(
+            let city_tag =
+                TagEntry::ensure_exists(&config.db, &format!("location:{}", location.city), "auto")
+                    .await?;
+            FileTagEntry::insert(
                 &config.db,
-                &format!("location:{}", location.city),
-                "auto",
-            ).await?;
-            FileTagEntry::insert(&config.db, &FileTagEntry {
-                file_key: key.to_string(),
-                tag_id: city_tag,
-            }).await?;
+                &FileTagEntry {
+                    file_key: key.to_string(),
+                    tag_id: city_tag,
+                },
+            )
+            .await?;
 
             // Add location:district tag (more precise)
             let district_tag = TagEntry::ensure_exists(
                 &config.db,
                 &format!("location:{}", location.district),
                 "auto",
-            ).await?;
-            FileTagEntry::insert(&config.db, &FileTagEntry {
-                file_key: key.to_string(),
-                tag_id: district_tag,
-            }).await?;
+            )
+            .await?;
+            FileTagEntry::insert(
+                &config.db,
+                &FileTagEntry {
+                    file_key: key.to_string(),
+                    tag_id: district_tag,
+                },
+            )
+            .await?;
         }
     }
 
     // Update effective_date (EXIF DateTimeOriginal > last_modified)
     // EXIF format is "2024:07:22 10:30:00" (colons), convert to "2024-07-22"
-    let exif_date = items.iter()
+    let exif_date = items
+        .iter()
         .find(|m| m.key == "DateTimeOriginal" || m.key == "DateTimeDigitized")
         .map(|m| m.value.as_str())
         .and_then(|v| v.get(..10))
         .map(|d| d.replace(":", "-"));
-    let effective_date = exif_date.as_deref().unwrap_or_else(|| {
-        &obj.last_modified[..10.min(obj.last_modified.len())]
-    });
+    let effective_date = exif_date
+        .as_deref()
+        .unwrap_or_else(|| &obj.last_modified[..10.min(obj.last_modified.len())]);
     sqlx::query("UPDATE files SET effective_date = ?, metadata_state = 'extracted' WHERE host_id = ? AND key = ?")
         .bind(effective_date)
         .bind(&config.host_id)

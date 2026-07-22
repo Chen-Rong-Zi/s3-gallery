@@ -22,82 +22,88 @@ async fn main() {
             name,
             description,
         } => {
-            if let Err(e) = cmd_init::run_init(&cli, bucket, prefix.as_deref(), name, description.as_deref()).await {
+            if let Err(e) = cmd_init::run_init(
+                &cli,
+                bucket,
+                prefix.as_deref(),
+                name,
+                description.as_deref(),
+            )
+            .await
+            {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
         }
-        Commands::Scan(command) => {
-            match command {
-                cli::ScanCommand::Init {
-                    prefix,
-                    incremental,
-                    schedule,
-                    force,
-                    no_metadata,
-                    with_thumbnails,
-                    concurrency,
-                    confirm,
-                } => {
-                    let opts = cmd_scan::ScanOptions {
-                        incremental: *incremental,
-                        schedule: *schedule,
-                        force: *force,
-                        extract_metadata: !no_metadata,
-                        with_thumbnails: *with_thumbnails,
-                        concurrency: *concurrency,
-                    };
-                    if let Err(e) = cmd_scan::run_init(&cli, prefix.clone(), opts, *confirm).await {
-                        eprintln!("Error: {}", e);
-                        std::process::exit(1);
-                    }
-                }
-                cli::ScanCommand::Update {
-                    prefix,
-                    incremental,
-                    schedule,
-                    force,
-                    no_metadata,
-                    with_thumbnails,
-                    concurrency,
-                } => {
-                    let opts = cmd_scan::ScanOptions {
-                        incremental: *incremental,
-                        schedule: *schedule,
-                        force: *force,
-                        extract_metadata: !no_metadata,
-                        with_thumbnails: *with_thumbnails,
-                        concurrency: *concurrency,
-                    };
-                    if let Err(e) = cmd_scan::run_update(&cli, prefix.clone(), opts).await {
-                        eprintln!("Error: {}", e);
-                        std::process::exit(1);
-                    }
-                }
-                cli::ScanCommand::Sync {
-                    prefix,
-                    incremental,
-                    schedule,
-                    force,
-                    no_metadata,
-                    with_thumbnails,
-                    concurrency,
-                } => {
-                    let opts = cmd_scan::ScanOptions {
-                        incremental: *incremental,
-                        schedule: *schedule,
-                        force: *force,
-                        extract_metadata: !no_metadata,
-                        with_thumbnails: *with_thumbnails,
-                        concurrency: *concurrency,
-                    };
-                    if let Err(e) = cmd_scan::run_sync(&cli, prefix.clone(), opts).await {
-                        eprintln!("Error: {}", e);
-                        std::process::exit(1);
-                    }
+        Commands::Scan(command) => match command {
+            cli::ScanCommand::Init {
+                prefix,
+                incremental,
+                schedule,
+                force,
+                no_metadata,
+                with_thumbnails,
+                concurrency,
+                confirm,
+            } => {
+                let opts = cmd_scan::ScanOptions {
+                    incremental: *incremental,
+                    schedule: *schedule,
+                    force: *force,
+                    extract_metadata: !no_metadata,
+                    with_thumbnails: *with_thumbnails,
+                    concurrency: *concurrency,
+                };
+                if let Err(e) = cmd_scan::run_init(&cli, prefix.clone(), opts, *confirm).await {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
                 }
             }
-        }
+            cli::ScanCommand::Update {
+                prefix,
+                incremental,
+                schedule,
+                force,
+                no_metadata,
+                with_thumbnails,
+                concurrency,
+            } => {
+                let opts = cmd_scan::ScanOptions {
+                    incremental: *incremental,
+                    schedule: *schedule,
+                    force: *force,
+                    extract_metadata: !no_metadata,
+                    with_thumbnails: *with_thumbnails,
+                    concurrency: *concurrency,
+                };
+                if let Err(e) = cmd_scan::run_update(&cli, prefix.clone(), opts).await {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            cli::ScanCommand::Sync {
+                prefix,
+                incremental,
+                schedule,
+                force,
+                no_metadata,
+                with_thumbnails,
+                concurrency,
+            } => {
+                let opts = cmd_scan::ScanOptions {
+                    incremental: *incremental,
+                    schedule: *schedule,
+                    force: *force,
+                    extract_metadata: !no_metadata,
+                    with_thumbnails: *with_thumbnails,
+                    concurrency: *concurrency,
+                };
+                if let Err(e) = cmd_scan::run_sync(&cli, prefix.clone(), opts).await {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        },
         Commands::View { host, view_command } => {
             if let Err(e) = cmd_view::run_view(&cli, host, view_command).await {
                 eprintln!("Error: {}", e);

@@ -46,17 +46,23 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .await?;
 
     // Attempt to add bucket column to host_config (ignore if already exists)
-    drop(sqlx::query("ALTER TABLE host_config ADD COLUMN bucket TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await);
+    drop(
+        sqlx::query("ALTER TABLE host_config ADD COLUMN bucket TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await,
+    );
 
     // Attempt to add endpoint and region columns to host_config (ignore if already exist)
-    drop(sqlx::query("ALTER TABLE host_config ADD COLUMN endpoint TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await);
-    drop(sqlx::query("ALTER TABLE host_config ADD COLUMN region TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await);
+    drop(
+        sqlx::query("ALTER TABLE host_config ADD COLUMN endpoint TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await,
+    );
+    drop(
+        sqlx::query("ALTER TABLE host_config ADD COLUMN region TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await,
+    );
 
     // files
     execute_query(
@@ -77,9 +83,11 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     .await?;
 
     // Attempt to add effective_date column to files (ignore if already exists)
-    drop(sqlx::query("ALTER TABLE files ADD COLUMN effective_date TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await);
+    drop(
+        sqlx::query("ALTER TABLE files ADD COLUMN effective_date TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await,
+    );
 
     // classification_rules
     execute_query(

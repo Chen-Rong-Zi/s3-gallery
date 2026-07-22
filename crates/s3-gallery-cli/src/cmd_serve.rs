@@ -48,12 +48,13 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
     if hosts.is_empty() {
         // No host_config entries — probe files table for distinct host_ids
         tracing::info!("no hosts in host_config, probing files table");
-        let rows: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT host_id FROM files ORDER BY host_id"
-        )
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| S3GalleryError::DbError(format!("Failed to probe files table: {e}")))?;
+        let rows: Vec<String> =
+            sqlx::query_scalar("SELECT DISTINCT host_id FROM files ORDER BY host_id")
+                .fetch_all(&pool)
+                .await
+                .map_err(|e| {
+                    S3GalleryError::DbError(format!("Failed to probe files table: {e}"))
+                })?;
 
         if rows.is_empty() {
             return Err(S3GalleryError::NotFound(

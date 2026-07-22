@@ -10,10 +10,7 @@ use crate::error::Result;
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn list_tags(
-    db: &SqlitePool,
-    host_id: Option<&str>,
-) -> Result<Vec<TagEntry>> {
+pub async fn list_tags(db: &SqlitePool, host_id: Option<&str>) -> Result<Vec<TagEntry>> {
     // Tags are global (not host-specific), but filter by host_id to only
     // return tags that have files associated with this host.
     let tags: Vec<TagEntry> = if let Some(hid) = host_id {

@@ -186,7 +186,7 @@ pub async fn browse(
         // Fetch per-host totals from files table
         let host_totals: Vec<(String, i64, i64)> = sqlx::query_as(
             "SELECT host_id, COUNT(*) as total_files, COALESCE(SUM(size), 0) as total_size \
-             FROM files WHERE is_deleted = 0 GROUP BY host_id ORDER BY host_id"
+             FROM files WHERE is_deleted = 0 GROUP BY host_id ORDER BY host_id",
         )
         .fetch_all(pool)
         .await

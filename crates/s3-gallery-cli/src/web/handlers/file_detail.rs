@@ -197,7 +197,8 @@ pub async fn file_detail(
     // Convert BTreeMap to Vec of (namespace, items) pairs so minijinja can
     // iterate with tuple unpacking (BTreeMap serializes to a JSON object,
     // which is not iterable in minijinja).
-    let metadata_vec: Vec<(String, Vec<MetadataItem>)> = metadata_by_namespace.into_iter().collect();
+    let metadata_vec: Vec<(String, Vec<MetadataItem>)> =
+        metadata_by_namespace.into_iter().collect();
     let context = json!({
         "file": {
             "key": file.key,

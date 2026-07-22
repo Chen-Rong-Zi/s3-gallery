@@ -52,7 +52,9 @@ async fn ensure_bucket(client: &aws_sdk_s3::Client, bucket_name: &str) -> Result
             if msg.contains("BucketAlreadyExists") || msg.contains("BucketAlreadyOwnedByYou") {
                 return Ok(());
             }
-            Err(S3GalleryError::S3Error(format!("Failed to create bucket: {msg}")))
+            Err(S3GalleryError::S3Error(format!(
+                "Failed to create bucket: {msg}"
+            )))
         }
     }
 }
@@ -87,10 +89,31 @@ async fn setup_scan_fixture(
     host_id: &str,
 ) -> Result<()> {
     let test_files = vec![
-        (format!("{prefix}/photos/2024/vacation.jpg"), vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09]),
-        (format!("{prefix}/photos/2024/party.mp4"), vec![0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6D, 0x70, 0x34, 0x32, 0x00, 0x00, 0x00, 0x00, 0x6D, 0x70, 0x34, 0x32]),
-        (format!("{prefix}/photos/2023/old-photo.jpg"), vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09]),
-        (format!("{prefix}/docs/readme.txt"), b"Hello, this is a readme file.".to_vec()),
+        (
+            format!("{prefix}/photos/2024/vacation.jpg"),
+            vec![
+                0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x02, 0x03,
+                0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+            ],
+        ),
+        (
+            format!("{prefix}/photos/2024/party.mp4"),
+            vec![
+                0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6D, 0x70, 0x34, 0x32, 0x00, 0x00,
+                0x00, 0x00, 0x6D, 0x70, 0x34, 0x32,
+            ],
+        ),
+        (
+            format!("{prefix}/photos/2023/old-photo.jpg"),
+            vec![
+                0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x02, 0x03,
+                0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
+            ],
+        ),
+        (
+            format!("{prefix}/docs/readme.txt"),
+            b"Hello, this is a readme file.".to_vec(),
+        ),
     ];
 
     for (key, data) in &test_files {
@@ -150,12 +173,22 @@ async fn e2e_view_tree() -> Result<()> {
 
     // Find the prefix directory in the tree
     let prefix_dir = tree.children.iter().find(|n| n.name == prefix);
-    assert!(prefix_dir.is_some(), "tree should contain prefix directory: {}", prefix);
+    assert!(
+        prefix_dir.is_some(),
+        "tree should contain prefix directory: {}",
+        prefix
+    );
 
     // Prefix dir should have photos and docs
     if let Some(dir) = prefix_dir {
-        assert!(dir.children.iter().any(|n| n.name == "photos"), "should have photos dir");
-        assert!(dir.children.iter().any(|n| n.name == "docs"), "should have docs dir");
+        assert!(
+            dir.children.iter().any(|n| n.name == "photos"),
+            "should have photos dir"
+        );
+        assert!(
+            dir.children.iter().any(|n| n.name == "docs"),
+            "should have docs dir"
+        );
     }
 
     cleanup_prefix(&s3, &bucket, &prefix).await?;
@@ -178,14 +211,34 @@ async fn e2e_view_ls() -> Result<()> {
 
     // List files in the photos/2024 subdirectory
     let photos_2024_prefix = format!("{prefix}/photos/2024");
-    let entries = view.list_directory(&host_id, &photos_2024_prefix, SortField::Name, SortOrder::Ascending).await?;
+    let entries = view
+        .list_directory(
+            &host_id,
+            &photos_2024_prefix,
+            SortField::Name,
+            SortOrder::Ascending,
+        )
+        .await?;
     assert_eq!(entries.len(), 2, "photos/2024 should have 2 entries");
-    assert!(entries.iter().any(|e| e.name == "vacation.jpg"), "should contain vacation.jpg");
-    assert!(entries.iter().any(|e| e.name == "party.mp4"), "should contain party.mp4");
+    assert!(
+        entries.iter().any(|e| e.name == "vacation.jpg"),
+        "should contain vacation.jpg"
+    );
+    assert!(
+        entries.iter().any(|e| e.name == "party.mp4"),
+        "should contain party.mp4"
+    );
 
     // List files in docs
     let docs_prefix = format!("{prefix}/docs");
-    let docs_entries = view.list_directory(&host_id, &docs_prefix, SortField::Name, SortOrder::Ascending).await?;
+    let docs_entries = view
+        .list_directory(
+            &host_id,
+            &docs_prefix,
+            SortField::Name,
+            SortOrder::Ascending,
+        )
+        .await?;
     assert_eq!(docs_entries.len(), 1, "docs should have 1 entry");
     assert_eq!(docs_entries[0].name, "readme.txt");
 
@@ -215,7 +268,10 @@ async fn e2e_view_stat() -> Result<()> {
     assert_eq!(jpeg_count, 2, "should have 2 jpeg files");
 
     // Check categories
-    assert!(stats.by_category.contains_key("image"), "should have image category");
+    assert!(
+        stats.by_category.contains_key("image"),
+        "should have image category"
+    );
 
     cleanup_prefix(&s3, &bucket, &prefix).await?;
     Ok(())
@@ -241,12 +297,21 @@ async fn e2e_view_search() -> Result<()> {
 
     // Search by name — should find vacation.jpg
     let result = view.search_by_name(&host_id, "vacation").await?;
-    assert_eq!(result.total_count, 1, "should find 1 file matching 'vacation'");
-    assert!(result.files[0].key.contains("vacation.jpg"), "should match vacation.jpg");
+    assert_eq!(
+        result.total_count, 1,
+        "should find 1 file matching 'vacation'"
+    );
+    assert!(
+        result.files[0].key.contains("vacation.jpg"),
+        "should match vacation.jpg"
+    );
 
     // Search by name — should NOT find non-existent file
     let no_match = view.search_by_name(&host_id, "nonexistent").await?;
-    assert_eq!(no_match.total_count, 0, "should find no files matching 'nonexistent'");
+    assert_eq!(
+        no_match.total_count, 0,
+        "should find no files matching 'nonexistent'"
+    );
 
     cleanup_prefix(&s3, &bucket, &prefix).await?;
     Ok(())
@@ -271,7 +336,10 @@ async fn e2e_view_duplicates() -> Result<()> {
 
     // The two JPEG files have identical content, so should be detected as duplicates
     let has_duplicates = groups.iter().any(|g| g.files.len() >= 2);
-    assert!(has_duplicates, "should detect at least one duplicate group with >=2 files");
+    assert!(
+        has_duplicates,
+        "should detect at least one duplicate group with >=2 files"
+    );
 
     cleanup_prefix(&s3, &bucket, &prefix).await?;
     Ok(())
@@ -293,12 +361,21 @@ async fn e2e_view_timeline() -> Result<()> {
     let timeline = view.get_timeline(&host_id).await?;
 
     // Timeline should have at least one entry (the scan date)
-    assert!(!timeline.is_empty(), "timeline should have at least one entry");
+    assert!(
+        !timeline.is_empty(),
+        "timeline should have at least one entry"
+    );
 
     // Each entry should have a date and count
     for entry in &timeline {
-        assert!(!entry.date.is_empty(), "each timeline entry should have a date");
-        assert!(entry.count > 0, "each timeline entry should have a positive count");
+        assert!(
+            !entry.date.is_empty(),
+            "each timeline entry should have a date"
+        );
+        assert!(
+            entry.count > 0,
+            "each timeline entry should have a positive count"
+        );
     }
 
     cleanup_prefix(&s3, &bucket, &prefix).await?;
@@ -336,7 +413,11 @@ async fn e2e_db_push_pull() -> Result<()> {
 
     // Pull DB from remote (simulate db pull)
     let pulled_data = s3.get_object(&bucket, &remote_db_key).await?;
-    assert_eq!(pulled_data.len(), db_data.len(), "pulled DB should match local DB size");
+    assert_eq!(
+        pulled_data.len(),
+        db_data.len(),
+        "pulled DB should match local DB size"
+    );
 
     // Verify the pulled data is a valid SQLite DB by reading from it
     let pulled_dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
@@ -348,7 +429,8 @@ async fn e2e_db_push_pull() -> Result<()> {
 
     // Verify both DBs have the same file count
     let files = s3_gallery_core::db::models::FileEntry::count(&pool, &host_id).await?;
-    let pulled_files = s3_gallery_core::db::models::FileEntry::count(&pulled_pool, &host_id).await?;
+    let pulled_files =
+        s3_gallery_core::db::models::FileEntry::count(&pulled_pool, &host_id).await?;
     assert_eq!(pulled_files, files, "pulled DB should have same file count");
 
     // Cleanup
@@ -376,14 +458,19 @@ async fn e2e_db_lock() -> Result<()> {
         bucket.clone(),
         lock_key.clone(),
         "e2e-test-client".to_string(),
-    ).await?;
-    assert!(s3_gallery_core::s3::lock::check_lock(s3.as_ref(), &bucket, &lock_key).await?,
-        "lock should be held after acquisition");
+    )
+    .await?;
+    assert!(
+        s3_gallery_core::s3::lock::check_lock(s3.as_ref(), &bucket, &lock_key).await?,
+        "lock should be held after acquisition"
+    );
 
     // Release lock
     guard.release().await?;
-    assert!(!s3_gallery_core::s3::lock::check_lock(s3.as_ref(), &bucket, &lock_key).await?,
-        "lock should be free after release");
+    assert!(
+        !s3_gallery_core::s3::lock::check_lock(s3.as_ref(), &bucket, &lock_key).await?,
+        "lock should be free after release"
+    );
 
     // Cleanup
     let _ = s3.delete_object(&bucket, &lock_key).await;

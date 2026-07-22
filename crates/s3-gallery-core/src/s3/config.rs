@@ -173,14 +173,7 @@ impl HostIdentifier {
         let created_at = Utc::now().to_rfc3339();
 
         Self::build(
-            host_id,
-            &host_name,
-            "unknown",
-            "",
-            bucket,
-            prefix,
-            created_at,
-            1,
+            host_id, &host_name, "unknown", "", bucket, prefix, created_at, 1,
         )
     }
 

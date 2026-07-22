@@ -40,10 +40,7 @@ fn content_type_for_download(file: &FileEntry) -> &str {
 ///
 /// Sets Content-Disposition to force download, along with Content-Type
 /// and Content-Length headers.
-pub async fn download(
-    State(state): State<AppState>,
-    Path(key): Path<String>,
-) -> impl IntoResponse {
+pub async fn download(State(state): State<AppState>, Path(key): Path<String>) -> impl IntoResponse {
     tracing::info!(handler = "download", key = %key, "download requested");
 
     // Parse host_id from key
@@ -55,7 +52,7 @@ pub async fn download(
                 [("content-type", "application/json")],
                 "{\"error\":\"invalid key\",\"detail\":\"Key must start with host_id/\"}"
                     .to_string()
-                .into_bytes(),
+                    .into_bytes(),
             )
                 .into_response();
         }
@@ -68,10 +65,8 @@ pub async fn download(
             return (
                 StatusCode::NOT_FOUND,
                 [("content-type", "application/json")],
-                format!(
-                    "{{\"error\":\"host not found\",\"detail\":\"No host: {host_id}\"}}"
-                )
-                .into_bytes(),
+                format!("{{\"error\":\"host not found\",\"detail\":\"No host: {host_id}\"}}")
+                    .into_bytes(),
             )
                 .into_response();
         }
@@ -115,10 +110,7 @@ pub async fn download(
             return (
                 StatusCode::BAD_REQUEST,
                 [("content-type", "application/json")],
-                format!(
-                    "{{\"error\":\"invalid key\",\"detail\":\"{e}\"}}"
-                )
-                .into_bytes(),
+                format!("{{\"error\":\"invalid key\",\"detail\":\"{e}\"}}").into_bytes(),
             )
                 .into_response();
         }
@@ -131,10 +123,7 @@ pub async fn download(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [("content-type", "application/json")],
-                format!(
-                    "{{\"error\":\"invalid bucket\",\"detail\":\"{e}\"}}"
-                )
-                .into_bytes(),
+                format!("{{\"error\":\"invalid bucket\",\"detail\":\"{e}\"}}").into_bytes(),
             )
                 .into_response();
         }
@@ -182,10 +171,8 @@ pub async fn download(
             (
                 StatusCode::NOT_FOUND,
                 [("content-type", "application/json")],
-                format!(
-                    "{{\"error\":\"file not found\",\"detail\":\"No file on S3: {key}\"}}"
-                )
-                .into_bytes(),
+                format!("{{\"error\":\"file not found\",\"detail\":\"No file on S3: {key}\"}}")
+                    .into_bytes(),
             )
                 .into_response()
         }

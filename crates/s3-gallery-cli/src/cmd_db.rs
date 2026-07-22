@@ -92,9 +92,7 @@ pub async fn run_db(cli: &Cli, host: &str, cmd: &DbCommands) -> Result<()> {
 
 async fn create_s3_client(cli: &Cli) -> Result<Arc<dyn S3Client>> {
     let bucket_str = cli.bucket.as_ref().ok_or_else(|| {
-        S3GalleryError::InvalidConfig(
-            "--bucket is required for DB commands".to_string(),
-        )
+        S3GalleryError::InvalidConfig("--bucket is required for DB commands".to_string())
     })?;
     let bucket = BucketName::new(bucket_str)
         .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid bucket: {}", e)))?;

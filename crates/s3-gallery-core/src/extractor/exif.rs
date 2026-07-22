@@ -17,10 +17,9 @@ impl ExifExtractor {
     /// and fails on truncated data.
     fn extract_manual(&self, data: &[u8]) -> Result<Vec<MetadataItem>> {
         // Find the APP1 marker (0xFF 0xE1) and extract raw EXIF data
-        let exif_tiff = Self::find_exif_in_jpeg(data)
-            .ok_or_else(|| S3GalleryError::MetadataExtraction(
-                "No Exif data found in JPEG".to_string()
-            ))?;
+        let exif_tiff = Self::find_exif_in_jpeg(data).ok_or_else(|| {
+            S3GalleryError::MetadataExtraction("No Exif data found in JPEG".to_string())
+        })?;
 
         // Parse the raw TIFF EXIF data
         let reader = exif::Reader::new();
@@ -161,10 +160,10 @@ mod tests {
         // Build a minimal JPEG: SOI + APP1(Exif) + EOI
         // TIFF data: little-endian ("II"), 8-byte header, empty IFD0
         let tiff: Vec<u8> = vec![
-            0x49, 0x49, 0x2A, 0x00,  // TIFF header (little-endian)
-            0x08, 0x00, 0x00, 0x00,  // offset to IFD0 = 8
-            0x00, 0x00,              // entry count = 0 (no entries)
-            0x00, 0x00, 0x00, 0x00,  // next IFD offset = 0
+            0x49, 0x49, 0x2A, 0x00, // TIFF header (little-endian)
+            0x08, 0x00, 0x00, 0x00, // offset to IFD0 = 8
+            0x00, 0x00, // entry count = 0 (no entries)
+            0x00, 0x00, 0x00, 0x00, // next IFD offset = 0
         ];
         let seg_len: u16 = (6 + tiff.len()) as u16 + 2; // +2 for length field itself
         let mut jpeg = Vec::new();
@@ -203,7 +202,9 @@ mod tests {
             0x00, 0x08, // segment length
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, // "compressed" data
         ];
-        assert!(ExifExtractor::find_exif_in_jpeg(&jpeg).is_none(),
-            "should stop at SOS without EXIF");
+        assert!(
+            ExifExtractor::find_exif_in_jpeg(&jpeg).is_none(),
+            "should stop at SOS without EXIF"
+        );
     }
 }

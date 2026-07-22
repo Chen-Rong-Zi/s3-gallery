@@ -743,7 +743,7 @@ impl DirSizeEntry {
     /// Returns `S3GalleryError::NotFound` if no entry exists.
     pub async fn get(pool: &SqlitePool, host_id: &str, dir_path: &str) -> Result<DirSizeEntry> {
         sqlx::query_as::<_, DirSizeEntry>(
-            "SELECT * FROM dir_sizes WHERE host_id = ? AND dir_path = ?"
+            "SELECT * FROM dir_sizes WHERE host_id = ? AND dir_path = ?",
         )
         .bind(host_id)
         .bind(dir_path)
@@ -769,7 +769,7 @@ impl DirSizeEntry {
         sqlx::query_as::<_, DirSizeEntry>(
             "SELECT * FROM dir_sizes \
              WHERE host_id = ? AND dir_path != ? AND dir_path LIKE ? \
-             ORDER BY dir_path"
+             ORDER BY dir_path",
         )
         .bind(host_id)
         .bind(prefix)
@@ -793,7 +793,7 @@ impl DirSizeEntry {
     ) -> Result<()> {
         sqlx::query(
             "INSERT OR REPLACE INTO dir_sizes (host_id, dir_path, total_size, total_files) \
-             VALUES (?, ?, ?, ?)"
+             VALUES (?, ?, ?, ?)",
         )
         .bind(host_id)
         .bind(dir_path)
@@ -898,14 +898,28 @@ mod tests {
         let (pool, _dir) = setup_test_db().await?;
 
         // INSERT path: new host_id creates a row
-        HostConfigEntry::upsert_host_config(&pool, "camera-1", "photos-bucket", "https://oss.example.com", "us-east-1").await?;
+        HostConfigEntry::upsert_host_config(
+            &pool,
+            "camera-1",
+            "photos-bucket",
+            "https://oss.example.com",
+            "us-east-1",
+        )
+        .await?;
         let config = HostConfigEntry::get(&pool, "camera-1").await?;
         assert_eq!(config.bucket, "photos-bucket");
         assert_eq!(config.endpoint, "https://oss.example.com");
         assert_eq!(config.region, "us-east-1");
 
         // UPDATE path: existing host_id updates bucket, endpoint, region
-        HostConfigEntry::upsert_host_config(&pool, "camera-1", "new-bucket", "https://oss2.example.com", "eu-west-1").await?;
+        HostConfigEntry::upsert_host_config(
+            &pool,
+            "camera-1",
+            "new-bucket",
+            "https://oss2.example.com",
+            "eu-west-1",
+        )
+        .await?;
         let config = HostConfigEntry::get(&pool, "camera-1").await?;
         assert_eq!(config.bucket, "new-bucket");
         assert_eq!(config.endpoint, "https://oss2.example.com");
@@ -923,8 +937,22 @@ mod tests {
         assert!(hosts.is_empty());
 
         // Insert two hosts
-        HostConfigEntry::upsert_host_config(&pool, "host-a", "bucket-a", "https://endpoint-a", "us-east-1").await?;
-        HostConfigEntry::upsert_host_config(&pool, "host-b", "bucket-b", "https://endpoint-b", "eu-west-1").await?;
+        HostConfigEntry::upsert_host_config(
+            &pool,
+            "host-a",
+            "bucket-a",
+            "https://endpoint-a",
+            "us-east-1",
+        )
+        .await?;
+        HostConfigEntry::upsert_host_config(
+            &pool,
+            "host-b",
+            "bucket-b",
+            "https://endpoint-b",
+            "eu-west-1",
+        )
+        .await?;
 
         let hosts = HostConfigEntry::list_all(&pool).await?;
         assert_eq!(hosts.len(), 2);
