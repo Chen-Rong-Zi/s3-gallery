@@ -137,7 +137,7 @@ async fn run_scan_core(
     let config_key = ObjectKey::new(config_key_str.clone())
         .map_err(|e| S3GalleryError::Internal(format!("Invalid config key: {e}")))?;
 
-    let root_config = s3.get_object(&bucket, &config_key).await.ok();
+    let root_config = s3.get_object(bucket, &config_key).await.ok();
 
     if let Some(data) = root_config {
         // CASE 1: Root has config → scan entire scope as a single host
@@ -150,13 +150,13 @@ async fn run_scan_core(
             .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
         let result = scan_host(
-            &s3, &pool, &bucket, &host, &scan_prefix, &opts,
+            s3, pool, bucket, &host, &scan_prefix, opts,
         )
         .await?;
 
         // Save host config
         HostConfigEntry::upsert_host_config(
-            &pool, &host.host_id, bucket_str, &cli.endpoint, &cli.region,
+            pool, &host.host_id, bucket_str, &cli.endpoint, &cli.region,
         )
         .await?;
 
@@ -172,7 +172,7 @@ async fn run_scan_core(
         let list_prefix = ObjectKey::new(scope_prefix_str.clone())
             .map_err(|e| S3GalleryError::Internal(format!("Invalid prefix: {e}")))?;
 
-        let all_objects = s3.list_objects(&bucket, &list_prefix).await?;
+        let all_objects = s3.list_objects(bucket, &list_prefix).await?;
 
         // Extract unique first-level directory names
         let mut subdirs: BTreeSet<String> = BTreeSet::new();
@@ -201,7 +201,7 @@ async fn run_scan_core(
             let dir_config_key = ObjectKey::new(dir_config_key_str)
                 .map_err(|e| S3GalleryError::Internal(format!("Invalid config key: {e}")))?;
 
-            let dir_config = s3.get_object(&bucket, &dir_config_key).await.ok();
+            let dir_config = s3.get_object(bucket, &dir_config_key).await.ok();
 
             if let Some(data) = dir_config {
                 // This subdirectory is a host
@@ -214,7 +214,7 @@ async fn run_scan_core(
                     .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
                 let result = scan_host(
-                    &s3, &pool, &bucket, &host, &scan_prefix, &opts,
+                    s3, pool, bucket, &host, &scan_prefix, opts,
                 )
                 .await?;
 
@@ -227,7 +227,7 @@ async fn run_scan_core(
 
                 // Save host config
                 HostConfigEntry::upsert_host_config(
-                    &pool, &host.host_id, bucket_str, &cli.endpoint, &cli.region,
+                    pool, &host.host_id, bucket_str, &cli.endpoint, &cli.region,
                 )
                 .await?;
 
@@ -253,7 +253,7 @@ async fn run_scan_core(
                     .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
                 let result = scan_host(
-                    &s3, &pool, &bucket, &temp_host, &scan_prefix, &opts,
+                    s3, pool, bucket, &temp_host, &scan_prefix, opts,
                 )
                 .await?;
 
@@ -265,7 +265,7 @@ async fn run_scan_core(
 
                 // Save minimal host config (type=auto, no name) for serve to discover
                 HostConfigEntry::upsert_host_config(
-                    &pool, dir, bucket_str, &cli.endpoint, &cli.region,
+                    pool, dir, bucket_str, &cli.endpoint, &cli.region,
                 )
                 .await?;
 
@@ -291,7 +291,7 @@ async fn run_scan_core(
     let db_key = ObjectKey::new("s3-gallery.db".to_string())
         .map_err(|e| S3GalleryError::Internal(format!("Invalid db key: {e}")))?;
     let db_data = std::fs::read(db_path).map_err(S3GalleryError::IoError)?;
-    s3.put_object(&bucket, &db_key, &db_data).await?;
+    s3.put_object(bucket, &db_key, &db_data).await?;
     println!("  DB pushed to remote.");
 
     Ok(())
