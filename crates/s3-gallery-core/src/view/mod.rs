@@ -13,6 +13,7 @@ pub mod stat;
 pub mod tags;
 pub mod timeline;
 pub mod timeline_gallery;
+pub mod traffic;
 pub mod tree;
 
 pub use remote::RemoteView;
