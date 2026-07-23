@@ -15,7 +15,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 async-trait = "0.1"
 futures = "0.3"
-tower = { version = "0.5", features = ["buffer", "timeout", "limit", "make"] }
+tower = { version = "0.5", features = ["buffer", "timeout", "limit", "make", "util"] }
 kamadak-exif = "0.5"
 image = "0.25"
 minijinja = "2"
