@@ -1,4 +1,5 @@
 pub mod aggregate;
+pub mod batch_service;
 pub mod diff;
 pub mod diff_layer;
 pub mod discover;
