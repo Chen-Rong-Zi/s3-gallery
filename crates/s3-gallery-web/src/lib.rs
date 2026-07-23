@@ -34,6 +34,7 @@ const TEMPLATES: &[(&str, &str)] = &[
         include_str!("../templates/search_results.html"),
     ),
     ("tags.html", include_str!("../templates/tags.html")),
+    ("traffic.html", include_str!("../templates/traffic.html")),
     ("stats.html", include_str!("../templates/stats.html")),
     (
         "duplicates.html",

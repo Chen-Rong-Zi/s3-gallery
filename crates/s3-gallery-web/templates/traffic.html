@@ -1,0 +1,42 @@
+{% extends "layout.html" %}
+{% block title %}Traffic - s3-gallery{% endblock %}
+{% block content %}
+<h1>Traffic Dashboard</h1>
+
+<div style="display: flex; gap: 20px; margin: 20px 0;">
+    <div style="flex: 1; padding: 20px; background: #f0f8ff; border-radius: 8px; text-align: center;">
+        <h3>&darr; Download</h3>
+        <div style="font-size: 2em;">{{ total_download_mb }} MB</div>
+    </div>
+    <div style="flex: 1; padding: 20px; background: #fff0f0; border-radius: 8px; text-align: center;">
+        <h3>&uarr; Upload</h3>
+        <div style="font-size: 2em;">{{ total_upload_mb }} MB</div>
+    </div>
+    <div style="flex: 1; padding: 20px; background: #f0fff0; border-radius: 8px; text-align: center;">
+        <h3>Requests</h3>
+        <div style="font-size: 2em;">{{ total_requests }}</div>
+    </div>
+    <div style="flex: 1; padding: 20px; background: #fff8f0; border-radius: 8px; text-align: center;">
+        <h3>Est. Cost</h3>
+        <div style="font-size: 2em;">{{ estimated_cost }}</div>
+    </div>
+</div>
+
+<h2>Per Business</h2>
+<table>
+    <tr><th>Business</th><th>Download</th><th>Upload</th><th>Requests</th></tr>
+    {% for biz in businesses %}
+    <tr>
+        <td>{{ biz.business }}</td>
+        <td>{{ "%.1f"|format(biz.download_bytes / 1048576) }} MB</td>
+        <td>{{ "%.1f"|format(biz.upload_bytes / 1048576) }} MB</td>
+        <td>{{ biz.requests }}</td>
+    </tr>
+    {% endfor %}
+</table>
+
+<h2>Live Traffic</h2>
+<div id="live-traffic" hx-get="/api/traffic/live" hx-trigger="every 5s" hx-swap="innerHTML">
+    <p>Loading...</p>
+</div>
+{% endblock %}

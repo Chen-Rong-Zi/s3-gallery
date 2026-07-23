@@ -14,6 +14,7 @@ pub mod settings;
 pub mod stats;
 pub mod tags;
 pub mod thumbnail;
+pub mod traffic_handler;
 
 pub use browse::browse;
 pub use dashboard::dashboard;
@@ -26,6 +27,9 @@ pub use settings::settings;
 pub use stats::stats;
 pub use tags::tags;
 pub use thumbnail::thumbnail;
+pub use traffic_handler::traffic;
+pub use traffic_handler::traffic_history;
+pub use traffic_handler::traffic_live;
 
 /// Unified handler return type — eliminates 15 lines of boilerplate per handler.
 pub enum HandlerResult {

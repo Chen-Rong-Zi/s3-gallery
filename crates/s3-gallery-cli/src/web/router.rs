@@ -17,5 +17,8 @@ pub fn create_router(app_state: AppState) -> Router {
         .route("/settings", get(handlers::settings))
         .route("/thumbnails/*key", get(handlers::thumbnail))
         .route("/download/*key", get(handlers::download))
+        .route("/traffic", get(handlers::traffic))
+        .route("/api/traffic/live", get(handlers::traffic_live))
+        .route("/api/traffic/history", get(handlers::traffic_history))
         .with_state(app_state)
 }
