@@ -1,4 +1,5 @@
 pub mod client;
+pub mod layers;
 pub mod s3_service;
 pub mod config;
 pub mod lock;
