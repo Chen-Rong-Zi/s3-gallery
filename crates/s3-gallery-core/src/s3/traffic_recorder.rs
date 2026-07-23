@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::mpsc;
 
 use crate::error::Result;
 use crate::s3::client::{ObjectMetadata, ObjectSummary, S3Client};
@@ -103,34 +102,26 @@ impl TrafficCounters {
     }
 }
 
-/// TrafficRecorder — fire-and-forget traffic recording.
+/// TrafficRecorder — fire-and-forget traffic recording via atomic counters.
 ///
-/// Uses a bounded mpsc channel (10,000 capacity) with try_send so that
-/// recording never blocks S3 operations. If the channel is full, records
-/// are silently dropped with a tracing::warn! log.
+/// Records traffic to AtomicU64 counters for real-time access. The background
+/// aggregator (spawn_aggregator in traffic_persist.rs) periodically reads and
+/// resets these counters, writing aggregated records to the database.
 pub struct TrafficRecorder {
     pub counters: Arc<TrafficCounters>,
-    pub tx: mpsc::Sender<TrafficRecord>,
 }
 
 impl TrafficRecorder {
     /// Create a new TrafficRecorder.
     pub fn new(_pool: sqlx::SqlitePool) -> Self {
-        let counters = Arc::new(TrafficCounters::new());
-        let (tx, _rx) = mpsc::channel(10_000);
-        Self { counters, tx }
+        Self {
+            counters: Arc::new(TrafficCounters::new()),
+        }
     }
 
-    /// Record a traffic event. Non-blocking — uses try_send.
+    /// Record a traffic event. Updates atomic counters (non-blocking).
     pub fn record(&self, record: TrafficRecord) {
         self.counters.record(&record);
-        if let Err(e) = self.tx.try_send(record) {
-            tracing::warn!(
-                target: "s3_gallery::traffic",
-                error = %e,
-                "traffic channel full, dropping record"
-            );
-        }
     }
 }
 
@@ -344,11 +335,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_traffic_recorder_record() {
-        let (tx, mut rx) = mpsc::channel(100);
         let counters = Arc::new(TrafficCounters::new());
         let recorder = TrafficRecorder {
             counters: counters.clone(),
-            tx,
         };
 
         let record = TrafficRecord {
@@ -364,19 +353,13 @@ mod tests {
 
         // Should be in counters immediately
         assert_eq!(counters.download_bytes.load(Ordering::Relaxed), 100);
-        // Should be in channel
-        let received = rx.try_recv().ok();
-        assert!(received.is_some());
-        assert_eq!(received.unwrap().bytes, 100);
     }
 
     #[tokio::test]
     async fn test_business_s3_client_records_traffic() -> crate::error::Result<()> {
-        let (tx, _rx) = mpsc::channel(100);
         let counters = Arc::new(TrafficCounters::new());
         let recorder = Arc::new(TrafficRecorder {
             counters: counters.clone(),
-            tx,
         });
         let inner = Arc::new(MockS3Client::with_fixtures(vec![("test.txt", b"hello")])?);
 

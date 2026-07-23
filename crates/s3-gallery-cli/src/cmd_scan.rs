@@ -319,6 +319,9 @@ async fn run_scan_core(
         }
     }
 
+    // Flush traffic counters to DB before pushing
+    s3_gallery_core::s3::traffic_persist::flush_counters(&recorder.counters, &pool).await;
+
     // Auto push DB to remote
     let db_key = ObjectKey::new("s3-gallery.db".to_string())
         .map_err(|e| S3GalleryError::Internal(format!("Invalid db key: {e}")))?;
@@ -342,7 +345,7 @@ async fn scan_host(
     // Build S3 service stack with traffic recording
     let core = S3Service::new(s3.clone());
 
-    let mut s3_stack = if let Some(rec) = recorder {
+    let s3_stack = if let Some(rec) = recorder {
         ServiceBuilder::new()
             .layer(LogLayer)
             .service(

@@ -15,7 +15,7 @@ async fn execute_query(pool: &SqlitePool, sql: &str) -> Result<()> {
 
 /// Run all schema migrations.
 ///
-/// Enables WAL mode and foreign keys, then creates all 9 tables and 7 indexes
+/// Enables WAL mode and foreign keys, then creates all 10 tables and 9 indexes
 /// if they do not already exist.  The DDL statements are idempotent, so running
 /// this function multiple times is safe.
 ///
@@ -192,6 +192,34 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .await?;
 
+    // scan_objects — snapshot of S3 listing for one scan
+    execute_query(
+        pool,
+        "CREATE TABLE IF NOT EXISTS scan_objects (
+            scan_id TEXT NOT NULL,
+            host_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            etag TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            last_modified TEXT NOT NULL,
+            is_deleted INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (scan_id, key)
+        );",
+    )
+    .await?;
+
+    execute_query(
+        pool,
+        "CREATE INDEX IF NOT EXISTS idx_scan_objects_scan_id ON scan_objects(scan_id);",
+    )
+    .await?;
+
+    execute_query(
+        pool,
+        "CREATE INDEX IF NOT EXISTS idx_scan_objects_host_id ON scan_objects(host_id);",
+    )
+    .await?;
+
     // -- Traffic tracking tables --------------------------------------------
 
     execute_query(
@@ -346,7 +374,7 @@ mod tests {
         let pool = create_pool(&db_path).await?;
         run_migrations(&pool).await?;
 
-        // Verify all 9 user tables exist (sqlite_sequence is auto-generated
+        // Verify all 10 user tables exist (sqlite_sequence is auto-generated
         // for AUTOINCREMENT columns and is excluded from the count).
         let tables: Vec<String> = sqlx::query_scalar(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -364,6 +392,7 @@ mod tests {
             "host_config",
             "metadata",
             "scan_metadata",
+            "scan_objects",
             "tags",
             "thumbnails",
             "traffic_file_log",
@@ -431,6 +460,8 @@ mod tests {
             "idx_metadata_file_key",
             "idx_metadata_key_value",
             "idx_metadata_namespace",
+            "idx_scan_objects_host_id",
+            "idx_scan_objects_scan_id",
             "idx_tags_tag_type",
             "idx_thumbnails_cached_at",
             "idx_traffic_file_host_key",

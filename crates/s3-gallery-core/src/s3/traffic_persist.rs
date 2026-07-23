@@ -1,4 +1,4 @@
-//! Background traffic aggregator — batches TrafficRecords from the mpsc channel
+//! Background traffic aggregator — reads atomic counters from TrafficCounters
 //! and writes them to the database every 60 seconds.
 
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use std::time::Duration;
 use chrono::Utc;
 use sqlx::SqlitePool;
 
-use super::traffic_recorder::TrafficRecorder;
+use super::traffic_recorder::{TrafficRecorder, TrafficCounters};
 
 /// Default aggregation interval in seconds.
 const AGGREGATION_INTERVAL_SECS: u64 = 60;
@@ -35,40 +35,16 @@ pub fn spawn_aggregator(
     };
 
     tokio::spawn(async move {
-        let mut interval_timer = tokio::time::interval(Duration::from_secs(interval));
         let counters = recorder.counters.clone();
+        // Flush immediately on startup, then on interval
+        flush_counters(&counters, &pool).await;
+        let mut interval_timer = tokio::time::interval(Duration::from_secs(interval));
 
         loop {
             interval_timer.tick().await;
 
             // Read and reset counters atomically
-            let download = counters.download_bytes.swap(0, Ordering::AcqRel);
-            let upload = counters.upload_bytes.swap(0, Ordering::AcqRel);
-            let count = counters.request_count.swap(0, Ordering::AcqRel);
-
-            if download == 0 && upload == 0 && count == 0 {
-                // No traffic this interval — still run cleanup
-                if let Err(e) = cleanup_old_data(&pool).await {
-                    tracing::warn!(target: "s3_gallery::traffic", error = %e, "traffic cleanup failed");
-                }
-                continue;
-            }
-
-            // Write a summary record to traffic_log
-            let now = Utc::now().to_rfc3339();
-            let result = sqlx::query(
-                "INSERT INTO traffic_log (host_id, operation, business, direction, bytes, count, recorded_at) \
-                 VALUES ('__aggregated', '__batch', '__aggregated', 'download', ?, ?, ?)",
-            )
-            .bind(download as i64)
-            .bind(count as i64)
-            .bind(&now)
-            .execute(&pool)
-            .await;
-
-            if let Err(e) = result {
-                tracing::warn!(target: "s3_gallery::traffic", error = %e, "failed to write aggregated traffic");
-            }
+            flush_counters(&counters, &pool).await;
 
             // Cleanup old data
             if let Err(e) = cleanup_old_data(&pool).await {
@@ -76,6 +52,33 @@ pub fn spawn_aggregator(
             }
         }
     })
+}
+
+/// Read and reset traffic counters, writing aggregated data to the DB.
+pub async fn flush_counters(counters: &Arc<TrafficCounters>, pool: &SqlitePool) {
+    let download = counters.download_bytes.swap(0, Ordering::AcqRel);
+    let upload = counters.upload_bytes.swap(0, Ordering::AcqRel);
+    let count = counters.request_count.swap(0, Ordering::AcqRel);
+
+    if download == 0 && upload == 0 && count == 0 {
+        return;
+    }
+
+    // Write a summary record to traffic_log
+    let now = Utc::now().to_rfc3339();
+    let result = sqlx::query(
+        "INSERT INTO traffic_log (host_id, operation, business, direction, bytes, count, recorded_at) \
+         VALUES ('__aggregated', '__batch', '__aggregated', 'download', ?, ?, ?)",
+    )
+    .bind(download as i64)
+    .bind(count as i64)
+    .bind(&now)
+    .execute(pool)
+    .await;
+
+    if let Err(e) = result {
+        tracing::warn!(target: "s3_gallery::traffic", error = %e, "failed to write aggregated traffic");
+    }
 }
 
 /// Delete traffic data older than the retention period.
