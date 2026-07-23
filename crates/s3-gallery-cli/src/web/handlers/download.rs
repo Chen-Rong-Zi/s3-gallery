@@ -7,11 +7,8 @@ use axum::{
 use s3_gallery_core::{
     db::models::FileEntry,
     error::S3GalleryError,
-    s3::s3_service::S3Service,
-    s3::layers::TrafficLayer,
     types::{BucketName, ObjectKey},
 };
-use tower::ServiceBuilder;
 
 use crate::web::state::AppState;
 
@@ -134,29 +131,7 @@ pub async fn download(State(state): State<AppState>, Path(key): Path<String>) ->
     };
 
     // Build S3 service with traffic recording for "web_download" business
-    let raw_client = match state.get_s3_client(host) {
-        Some(c) => c.clone(),
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [("content-type", "application/json")],
-                format!(
-                    "{{\"error\":\"no S3 client\",\"detail\":\"No S3 client for host: {host_id}\"}}"
-                )
-                .into_bytes(),
-            )
-                .into_response();
-        }
-    };
-
-    let mut s3 = if let Some(ref recorder) = state.traffic_recorder {
-        let core = S3Service::new(raw_client);
-        ServiceBuilder::new()
-            .layer(TrafficLayer::new(recorder.clone(), host_id, "web_download"))
-            .service(core)
-    } else {
-        S3Service::new(raw_client)
-    };
+    let mut s3 = state.s3_with_traffic(host_id, "web_download");
 
     // Fetch file content from S3
     match s3.get_object(&bucket_name, &object_key).await {

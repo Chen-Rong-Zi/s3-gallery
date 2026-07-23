@@ -1,11 +1,11 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use s3_gallery_core::db::models::HostConfigEntry;
-use s3_gallery_core::s3::client::S3Client;
+use s3_gallery_core::s3::layers::TrafficLayer;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
 use sqlx::SqlitePool;
+use tower::ServiceBuilder;
 
 /// Shared application state for multi-host serving.
 #[derive(Clone)]
@@ -14,8 +14,6 @@ pub struct AppState {
     pub db: SqlitePool,
     /// All hosts from the database.
     pub hosts: Vec<HostConfigEntry>,
-    /// S3 clients keyed by endpoint URL (endpoint "" = CLI default).
-    pub s3_clients: HashMap<String, Arc<dyn S3Client>>,
     /// Tower-composed S3 service stack.
     pub s3_stack: S3Service,
     /// Optional traffic recorder.
@@ -59,9 +57,14 @@ impl AppState {
         }
     }
 
-    /// Get the S3 client for a host's endpoint.
-    pub fn get_s3_client(&self, host: &HostConfigEntry) -> Option<&Arc<dyn S3Client>> {
-        let endpoint = self.effective_endpoint(host);
-        self.s3_clients.get(endpoint)
+    /// Get an S3Service with per-business traffic recording.
+    pub fn s3_with_traffic(&self, host_id: &str, business: &str) -> S3Service {
+        if let Some(ref recorder) = self.traffic_recorder {
+            ServiceBuilder::new()
+                .layer(TrafficLayer::new(recorder.clone(), host_id, business))
+                .service(self.s3_stack.clone())
+        } else {
+            self.s3_stack.clone()
+        }
     }
 }

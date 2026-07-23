@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -10,9 +9,8 @@ use s3_gallery_core::db::pool::create_pool;
 use s3_gallery_core::db::schema::run_migrations;
 use s3_gallery_core::db::status::{check_db_status, decide_action, DbAction};
 use s3_gallery_core::error::{Result, S3GalleryError};
-use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
-use s3_gallery_core::s3::layers::{LogLayer, TrafficLayer};
+use s3_gallery_core::s3::layers::LogLayer;
 use s3_gallery_core::s3::real::RealS3Client;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::s3::traffic_persist::spawn_aggregator;
@@ -82,52 +80,37 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
         tracing::info!("discovered {} host(s) from files table", hosts.len());
     }
 
-    // Group hosts by endpoint and create S3 clients
-    let mut s3_clients: HashMap<String, Arc<dyn S3Client>> = HashMap::new();
-    for host in &hosts {
-        let endpoint = if host.endpoint.is_empty() {
-            &cli.endpoint
-        } else {
-            &host.endpoint
-        };
-        let region = if host.region.is_empty() {
-            &cli.region
-        } else {
-            &host.region
-        };
-
-        if !s3_clients.contains_key(endpoint) {
-            let config = OssConfig::validate(
-                BucketName::new("placeholder")
-                    .map_err(|_| S3GalleryError::Internal("invalid placeholder".to_string()))?,
-                endpoint,
-                region,
-                &cli.access_key,
-                &cli.secret_key,
-                10,
-            )?;
-            let client = RealS3Client::from_config(&config);
-            s3_clients.insert(endpoint.clone(), Arc::new(client) as Arc<dyn S3Client>);
-        }
-    }
-
-    // Build S3Service stack with logging and traffic layers
-    let core_s3 = S3Service::new(
-        s3_clients
-            .values()
-            .next()
-            .cloned()
-            .ok_or_else(|| S3GalleryError::Internal("no S3 clients available".to_string()))?,
-    );
+    // Create S3 client from the first host's config
+    let first_host = hosts.first().ok_or_else(|| {
+        S3GalleryError::Internal("no hosts available".to_string())
+    })?;
+    let endpoint = if first_host.endpoint.is_empty() {
+        &cli.endpoint
+    } else {
+        &first_host.endpoint
+    };
+    let region = if first_host.region.is_empty() {
+        &cli.region
+    } else {
+        &first_host.region
+    };
+    let config = OssConfig::validate(
+        BucketName::new("placeholder")
+            .map_err(|_| S3GalleryError::Internal("invalid placeholder".to_string()))?,
+        endpoint,
+        region,
+        &cli.access_key,
+        &cli.secret_key,
+        10,
+    )?;
+    let core_s3 = S3Service::new(Arc::new(RealS3Client::from_config(&config)));
 
     // Traffic recorder
     let recorder = Arc::new(TrafficRecorder::new(pool.clone()));
     let _agg_handle = spawn_aggregator(recorder.clone(), pool.clone(), 60);
 
-    // Apply layers: LogLayer wraps TrafficLayer, both output S3Service
-    let s3_stack = LogLayer.layer(
-        TrafficLayer::new(recorder.clone(), "serve", "s3_api").layer(core_s3),
-    );
+    // Apply layers: LogLayer wraps core_s3
+    let s3_stack = LogLayer.layer(core_s3);
 
     // Register templates from s3-gallery-web
     let mut env = minijinja::Environment::new();
@@ -145,7 +128,6 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
         templates: Arc::new(env),
         db: pool,
         hosts,
-        s3_clients,
         s3_stack,
         traffic_recorder: Some(recorder),
         prefix,
