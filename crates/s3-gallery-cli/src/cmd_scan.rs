@@ -342,7 +342,7 @@ async fn scan_host(
     // Build S3 service stack with traffic recording
     let core = S3Service::new(s3.clone());
 
-    let _s3_stack = if let Some(rec) = recorder {
+    let mut s3_stack = if let Some(rec) = recorder {
         ServiceBuilder::new()
             .layer(LogLayer)
             .service(
@@ -357,7 +357,7 @@ async fn scan_host(
     };
 
     let scan_config = ScanConfig {
-        s3: s3.clone(),
+        s3: s3_stack,
         db: pool.clone(),
         bucket: bucket.clone(),
         prefix: scan_prefix.clone(),

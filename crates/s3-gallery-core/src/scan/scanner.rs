@@ -14,12 +14,13 @@ use crate::extractor::registry::ExtractorRegistry;
 use crate::extractor::tag_rules::TagRule;
 use crate::s3::client::{ObjectSummary, S3Client};
 use crate::s3::lock::acquire_lock;
+use crate::s3::s3_service::S3Service;
 use crate::types::{BucketName, FileType, ObjectKey};
 use crate::util::concurrency::ConcurrencyLimiter;
 
 /// Configuration for a scan operation.
 pub struct ScanConfig {
-    pub s3: Arc<dyn S3Client>,
+    pub s3: S3Service,
     pub db: SqlitePool,
     pub bucket: BucketName,
     pub prefix: ObjectKey,
@@ -47,7 +48,7 @@ pub struct ScanResult {
 /// # Errors
 ///
 /// Returns an error if any S3 or database operation fails.
-async fn scan_core(config: ScanConfig) -> Result<ScanResult> {
+async fn scan_core(mut config: ScanConfig) -> Result<ScanResult> {
     let start = Instant::now();
     let _limiter = ConcurrencyLimiter::new(config.concurrency);
 
@@ -295,7 +296,7 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
         .map_err(|e| S3GalleryError::Internal(format!("Failed to create lock key: {}", e)))?;
 
     let guard = acquire_lock(
-        config.s3.clone(),
+        config.s3.clone().into_inner(),
         config.bucket.clone(),
         lock_key,
         config.client_id.clone(),
@@ -345,8 +346,8 @@ async fn process_file_metadata(
 
     // Download only the first 64KB (EXIF data is in the APP1 marker,
     // which is always near the start of the JPEG file)
-    let data = match config
-        .s3
+    let mut s3 = config.s3.clone();
+    let data = match s3
         .get_object_range(&config.bucket, &obj.key, 0, 65536)
         .await
     {
@@ -567,7 +568,7 @@ mod tests {
         let s3 = Arc::new(MockS3Client::new()) as Arc<dyn S3Client>;
 
         let config = ScanConfig {
-            s3: s3.clone(),
+            s3: S3Service::new(s3.clone()),
             db: pool.clone(),
             bucket: BucketName::new("test-bucket")?,
             prefix: ObjectKey::new("test")?,
