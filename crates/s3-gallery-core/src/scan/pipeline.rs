@@ -103,6 +103,45 @@ pub struct AggregateReport {
     pub duration_secs: f64,
 }
 
+/// EXIF 提取请求
+#[derive(Debug, Clone)]
+pub struct ExifRequest {
+    pub bucket: crate::types::BucketName,
+    pub key: crate::types::ObjectKey,
+    pub host_id: String,
+    pub file_type: String,
+    pub ext: String,
+}
+
+/// EXIF 提取结果
+#[derive(Debug, Clone)]
+pub enum ExifResult {
+    Some(ExifData),
+    None,
+}
+
+/// 成功提取的 EXIF 数据
+#[derive(Debug, Clone)]
+pub struct ExifData {
+    pub items: Vec<crate::extractor::registry::MetadataItem>,
+    pub effective_date: Option<String>,
+}
+
+/// 标签解析请求
+#[derive(Debug, Clone)]
+pub struct TagRequest {
+    pub host_id: String,
+    pub key: String,
+    pub exif_data: ExifData,
+    pub file_type: String,
+}
+
+/// 标签解析结果
+#[derive(Debug, Clone)]
+pub struct TagResponse {
+    pub tags: Vec<String>,
+}
+
 impl Default for AggregateReport {
     fn default() -> Self {
         Self {
