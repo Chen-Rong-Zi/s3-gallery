@@ -17,6 +17,7 @@ use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
 use s3_gallery_core::s3::real::RealS3Client;
+use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::scan::scanner::{run_scan, ScanConfig};
 use s3_gallery_core::types::{BucketName, ObjectKey, SortField, SortOrder};
 use s3_gallery_core::view::LocalView;
@@ -123,7 +124,7 @@ async fn setup_scan_fixture(
 
     let scan_config = ScanConfig {
         host_id: host_id.to_string(),
-        s3: s3.clone(),
+        s3: S3Service::new(s3.clone()),
         db: pool.clone(),
         bucket: bucket.clone(),
         prefix: ObjectKey::new(prefix)?,

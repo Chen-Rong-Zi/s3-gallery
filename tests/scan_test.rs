@@ -9,6 +9,7 @@ use s3_gallery_core::db::models::FileEntry;
 use s3_gallery_core::error::Result;
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::mock::MockS3Client;
+use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::scan::scanner::{run_scan, ScanConfig};
 use s3_gallery_core::types::{BucketName, ObjectKey};
 use sqlx::SqlitePool;
@@ -31,7 +32,7 @@ fn make_scan_config(
     let listing_prefix = if prefix.is_empty() { "test/" } else { prefix };
     ScanConfig {
         host_id: "test-host".to_string(),
-        s3,
+        s3: S3Service::new(s3),
         db,
         bucket,
         prefix: ObjectKey::new(listing_prefix).expect("valid prefix"),

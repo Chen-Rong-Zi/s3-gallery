@@ -1,3 +1,4 @@
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -7,9 +8,12 @@ use chrono::Utc;
 use s3_gallery_core::{
     db::models::ThumbnailEntry,
     error::S3GalleryError,
+    s3::s3_service::S3Service,
+    s3::layers::TrafficLayer,
     thumbnail::generator::generate_thumbnail,
     types::{BucketName, ObjectKey},
 };
+use tower::ServiceBuilder;
 
 use crate::web::state::AppState;
 
@@ -117,7 +121,8 @@ pub async fn thumbnail(
         }
     };
 
-    let s3 = match state.get_s3_client(host) {
+    // Build S3 service with traffic recording for "web_thumbnail" business
+    let raw_client = match state.get_s3_client(host) {
         Some(c) => c.clone(),
         None => {
             return (
@@ -127,6 +132,15 @@ pub async fn thumbnail(
             )
                 .into_response();
         }
+    };
+
+    let mut s3 = if let Some(ref recorder) = state.traffic_recorder {
+        let core = S3Service::new(raw_client);
+        ServiceBuilder::new()
+            .layer(TrafficLayer::new(recorder.clone(), host_id, "web_thumbnail"))
+            .service(core)
+    } else {
+        S3Service::new(raw_client)
     };
 
     // Fetch from S3 and generate thumbnail

@@ -1,6 +1,5 @@
 use chrono::Utc;
 use sqlx::SqlitePool;
-use std::sync::Arc;
 use std::time::Instant;
 
 use super::diff::diff_objects;
@@ -12,7 +11,7 @@ use crate::error::{Result, S3GalleryError};
 use crate::extractor::exif::ExifExtractor;
 use crate::extractor::registry::ExtractorRegistry;
 use crate::extractor::tag_rules::TagRule;
-use crate::s3::client::{ObjectSummary, S3Client};
+use crate::s3::client::ObjectSummary;
 use crate::s3::lock::acquire_lock;
 use crate::s3::s3_service::S3Service;
 use crate::types::{BucketName, FileType, ObjectKey};
@@ -518,8 +517,10 @@ fn get_content_type(key: &ObjectKey) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::db::pool::create_pool;
     use crate::db::schema::run_migrations;
+    use crate::s3::client::S3Client;
     use crate::s3::mock::MockS3Client;
     use tempfile::tempdir;
 

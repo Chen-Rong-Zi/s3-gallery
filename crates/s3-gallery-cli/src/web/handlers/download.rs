@@ -1,3 +1,4 @@
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -6,8 +7,11 @@ use axum::{
 use s3_gallery_core::{
     db::models::FileEntry,
     error::S3GalleryError,
+    s3::s3_service::S3Service,
+    s3::layers::TrafficLayer,
     types::{BucketName, ObjectKey},
 };
+use tower::ServiceBuilder;
 
 use crate::web::state::AppState;
 
@@ -129,7 +133,8 @@ pub async fn download(State(state): State<AppState>, Path(key): Path<String>) ->
         }
     };
 
-    let s3 = match state.get_s3_client(host) {
+    // Build S3 service with traffic recording for "web_download" business
+    let raw_client = match state.get_s3_client(host) {
         Some(c) => c.clone(),
         None => {
             return (
@@ -142,6 +147,15 @@ pub async fn download(State(state): State<AppState>, Path(key): Path<String>) ->
             )
                 .into_response();
         }
+    };
+
+    let mut s3 = if let Some(ref recorder) = state.traffic_recorder {
+        let core = S3Service::new(raw_client);
+        ServiceBuilder::new()
+            .layer(TrafficLayer::new(recorder.clone(), host_id, "web_download"))
+            .service(core)
+    } else {
+        S3Service::new(raw_client)
     };
 
     // Fetch file content from S3
