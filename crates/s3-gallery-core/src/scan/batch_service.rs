@@ -1,8 +1,8 @@
 //! BatchService — 泛型批量并发 Service。
 //!
 //! 包装任意 `Service<Req, Response = Res>`，接受 `IntoIterator<Item = Req>`，
-//! 内部用 FuturesUnordered + Semaphore 并发执行，返回 `Vec<Result<Res, Error>>`。
-//! **重要：结果按插入顺序返回，不受完成顺序影响。**
+//! 内部用 FuturesOrdered + Semaphore 并发执行，返回 `Vec<Result<Res, Error>>`。
+//! FuturesOrdered 保证结果按插入顺序返回，不受完成顺序影响。
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures::stream::{FuturesOrdered, StreamExt};
 use tokio::sync::Semaphore;
 use tower::Service;
 
@@ -64,40 +64,20 @@ where
         let semaphore = Arc::new(Semaphore::new(self.max_concurrency));
 
         Box::pin(async move {
-            let mut tasks = FuturesUnordered::new();
-            for (idx, req) in reqs.into_iter().enumerate() {
+            let mut tasks = FuturesOrdered::new();
+            for req in reqs.into_iter() {
                 let mut inner = inner.clone();
                 let permit = semaphore.clone().acquire_owned();
-                tasks.push(async move {
+                tasks.push_back(async move {
                     // SAFETY: semaphore is created locally and never closed
                     #[allow(clippy::expect_used)]
                     let _permit = permit.await.expect("semaphore closed");
-                    let result = inner.call(req).await;
-                    (idx, result)
+                    inner.call(req).await
                 });
             }
 
-            let mut results: Vec<Option<std::result::Result<Res, I::Error>>> =
-                Vec::with_capacity(tasks.len());
-            // Use placeholder values; we fill every slot by index
-            for _ in 0..tasks.len() {
-                results.push(None);
-            }
-            while let Some((idx, result)) = tasks.next().await {
-                // SAFETY: idx is in bounds because we enumerated reqs and allocated
-                // exactly tasks.len() slots
-                if let Some(slot) = results.get_mut(idx) {
-                    *slot = Some(result);
-                }
-            }
-            // SAFETY: every slot was filled by the while loop above;
-            // the if-condition above always matches because idx < tasks.len()
-            // We use a helper fn to avoid #[allow] on expression for expect_used
-            #[inline(always)]
-            fn take_all<T>(v: Vec<Option<T>>) -> Vec<T> {
-                v.into_iter().map(|r| r.unwrap_or_else(|| unreachable!())).collect()
-            }
-            Ok(take_all(results))
+            let results: Vec<_> = tasks.collect().await;
+            Ok(results)
         })
     }
 }
