@@ -79,30 +79,33 @@ struct TagResponse {
 
 ### 2.3 ExifService 内部组合
 
-ExifService 由两个层组合而成，从内到外：
+ExifService 由 ChunkedDownloadService（基础 Service）和 ExtractionLayer（包装层）组合而成：
 
-**ChunkedDownloadLayer（内层）：** 接受 `ExifRequest`，调用 `S3Service.get_object_range` 下载 64KB，返回 `Vec<u8>`。
+**ChunkedDownloadService（基础 Service，不是 Layer）：** 接受 `ExifRequest`，调用 `S3Service.get_object_range` 下载 64KB，返回 `Vec<u8>`。
 
 ```rust
-struct ChunkedDownloadLayer {
+struct ChunkedDownloadService {
     s3: S3Service,
 }
 
-impl Layer<I> for ChunkedDownloadLayer {
-    type Service = BoxService<ExifRequest, Vec<u8>, S3GalleryError>;
+impl Service<ExifRequest> for ChunkedDownloadService {
+    type Response = Vec<u8>;
+    type Error = S3GalleryError;
     // 从 ExifRequest 中提取 (bucket, key)，调用 s3.get_object_range
 }
 ```
 
-**ExtractionLayer（外层）：** 接受 `Vec<u8>`，运行 `ExtractorRegistry.extract_all`，存储 `MetadataEntry`，返回 `ExifResult`。
+**ExtractionLayer（Layer，包装 ChunkedDownloadService）：** 接受 `Vec<u8>`，运行 `ExtractorRegistry.extract_all`，存储 `MetadataEntry`，返回 `ExifResult`。
 
 ```rust
 struct ExtractionLayer {
     db: SqlitePool,
 }
 
-impl Layer<I> for ExtractionLayer {
-    type Service = BoxService<Vec<u8>, ExifResult, S3GalleryError>;
+impl<I> Layer<I> for ExtractionLayer
+where I: Service<ExifRequest, Response = Vec<u8>, Error = S3GalleryError>
+{
+    type Service = BoxService<ExifRequest, ExifResult, S3GalleryError>;
     // 解析 bytes → MetadataItem[]，存储到 DB，返回 ExifData
 }
 ```
@@ -110,60 +113,12 @@ impl Layer<I> for ExtractionLayer {
 **组合：**
 
 ```rust
-let exif_service = ServiceBuilder::new()
-    .layer(ExtractionLayer::new(db))
-    .layer(ChunkedDownloadLayer::new(exif_s3))
-    .service(/* 起始点——但 ExifService 不是从 scan pipeline 来的 */);
+let exif_service: BoxService<ExifRequest, ExifResult, S3GalleryError> = ServiceBuilder::new()
+    .layer(ExtractionLayer::new(db))   // 外层：Vec<u8> → ExifResult
+    .service(ChunkedDownloadService::new(s3));  // 内层：ExifRequest → Vec<u8>
 ```
 
-等一下——这里有个问题。`ChunkedDownloadLayer` 接受 `ExifRequest`，`ExtractionLayer` 接受 `Vec<u8>`。但 `ServiceBuilder` 组合时，内层 Service 的 Request 类型由外层决定。`ExtractionLayer` 是 `Layer<I>`，它的 `I` 需要是 `Service<Vec<u8>>`，但 `ChunkedDownloadLayer` 的 output 是 `Vec<u8>`。
-
-所以 `ExtractionLayer` 应该包装在 `ChunkedDownloadLayer` 外面：
-
-```rust
-// ExtractionLayer 接受 Vec<u8>，返回 ExifResult
-// ChunkedDownloadLayer 接受 ExifRequest，返回 Vec<u8>
-// 组合后：ExifRequest → ExifResult
-
-let exif_service = ServiceBuilder::new()
-    .layer(ExtractionLayer::new(db))      // 外层：Vec<u8> → ExifResult
-    .layer(ChunkedDownloadLayer::new(s3)) // 内层：ExifRequest → Vec<u8>
-    .service(/* 不需要，因为 ChunkedDownloadLayer 自己就是终点 */);
-```
-
-不对，`ServiceBuilder` 需要 `.service(inner)` 作为最内层。但 `ChunkedDownloadLayer` 是最内层，它不需要 inner——它直接做 S3 调用。
-
-所以 `ChunkedDownloadLayer` 不是 `Layer`，而是一个 `Service<ExifRequest>`：
-
-```rust
-// ChunkedDownloadService 是基础 Service（不是 Layer）
-struct ChunkedDownloadService {
-    s3: S3Service,
-}
-
-impl Service<ExifRequest> for ChunkedDownloadService {
-    type Response = Vec<u8>;
-    // 下载 64KB
-}
-
-// ExtractionLayer 是 Layer，包装下载结果
-struct ExtractionLayer {
-    db: SqlitePool,
-}
-
-impl<I> Layer<I> for ExtractionLayer
-where I: Service<ExifRequest, Response = Vec<u8>>
-{
-    type Service = BoxService<ExifRequest, ExifResult, S3GalleryError>;
-    // 解析 bytes → 存储 metadata → 返回 ExifResult
-}
-
-// 组合：
-let exif_service = ServiceBuilder::new()
-    .layer(ExtractionLayer::new(db))
-    .service(ChunkedDownloadService::new(s3));
-// 类型：BoxService<ExifRequest, ExifResult, S3GalleryError>
-```
+`ChunkedDownloadService` 是最内层，直接实现 `Service<ExifRequest>`（不是 Layer）。`ExtractionLayer` 包装它，类型链为 `ExifRequest → ExifResult`。
 
 ### 2.4 TagService
 
@@ -183,43 +138,107 @@ impl Service<TagRequest> for TagService {
 }
 ```
 
-### 2.5 ProcessLayer 简化后
+### 2.5 BatchService — 通用批量并发 Service
 
-ProcessLayer 不再需要 `exif_s3` 字段，改为持有 `exif_service` 和 `tag_service`：
+ProcessLayer 当前用 for 循环逐个 await。为消除循环并实现并发，引入 `BatchService<I, Req, Res>`——一个泛型 Service，把 `Vec<Req>` 或任何 `IntoIterator<Item = Req>` 转换为 `Vec<Result<Res, Error>>`，内部用 `Semaphore` 控制并发度。
+
+```rust
+/// 通用批量 Service：包装任意 Service<Req, Res>，
+/// 接受 IntoIterator<Item = Req>，并发执行，返回 Vec<Result<Res, Error>>。
+pub struct BatchService<I, Req, Res> {
+    inner: I,
+    max_concurrency: usize,
+}
+
+impl<I, Req, Res, Iter> Service<Iter> for BatchService<I, Req, Res>
+where
+    I: Service<Req, Response = Res> + Clone + Send + 'static,
+    I::Future: Send,
+    Req: Send + 'static,
+    Res: Send + 'static,
+    Iter: IntoIterator<Item = Req>,
+    Iter::IntoIter: Send,
+{
+    type Response = Vec<Result<Res, I::Error>>;
+    type Error = I::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn call(&mut self, reqs: Iter) -> Self::Future {
+        let inner = self.inner.clone();
+        let semaphore = Arc::new(Semaphore::new(self.max_concurrency));
+
+        Box::pin(async move {
+            use futures::stream::FuturesUnordered;
+            use futures::StreamExt;
+
+            let mut tasks = FuturesUnordered::new();
+            for req in reqs.into_iter() {
+                let mut inner = inner.clone();
+                let permit = semaphore.clone().acquire_owned();
+                tasks.push(async move {
+                    let _permit = permit.await.unwrap();
+                    inner.call(req).await
+                });
+            }
+
+            tasks.collect::<Vec<_>>().await
+        })
+    }
+}
+```
+
+**核心设计：**
+- `IntoIterator` 泛型：接受 `Vec<Req>`、`Vec<Req>.into_iter()`、`iter.map(...)` 等任何惰性迭代器
+- `FuturesUnordered`：流式消费，任务完成一个即可返回，不等全部收集
+- `Semaphore`：限制最大并发数，防止打满 S3
+
+### 2.6 ProcessLayer 简化后
+
+ProcessLayer 不再持有 `exif_s3`，改为持有 `BatchService<ExifService, ExifRequest, ExifResult>` 和 `BatchService<TagService, TagRequest, TagResponse>`：
 
 ```rust
 struct ProcessLayer {
     db: SqlitePool,
-    exif_service: BoxService<ExifRequest, ExifResult, S3GalleryError>,
-    tag_service: TagService,
+    batch_exif: BatchService<BoxService<ExifRequest, ExifResult, S3GalleryError>, ExifRequest, ExifResult>,
+    batch_tag: BatchService<TagService, TagRequest, TagResponse>,
 }
 ```
 
-for 循环简化为：
+for 循环完全消除，变为两阶段处理：
 
 ```rust
-for entry in &pending {
-    let exif_result = exif_service.call(ExifRequest {
-        bucket: bucket.clone(),
-        key: ObjectKey::new(entry.key.clone())?,
-        host_id: host.host_id.clone(),
-        file_type: ...,  // 从 entry 或扩展名计算
-        ext: ...,
-    }).await?;
-
-    if let ExifResult::Some(exif_data) = exif_result {
-        tag_service.call(TagRequest {
-            host_id: host.host_id.clone(),
-            key: entry.key.clone(),
-            exif_data,
-            file_type: ...,
-        }).await?;
-        processed += 1;
-    } else {
-        // 标记为 extracted，无 EXIF
-        // ...
+// 1. 构造所有 ExifRequest（惰性迭代，不分配）
+let exif_reqs = pending.iter().filter_map(|entry| {
+    let ext = parse_extension(entry.key.rsplit('/').next()?)?;
+    let file_type = classify_extension(&ext);
+    // 检查是否有 extractor 支持
+    if registry.find(&file_type, ext.as_str()).is_empty() {
+        return None;
     }
-}
+    Some(ExifRequest {
+        bucket: bucket.clone(),
+        key: ObjectKey::new(entry.key.clone()).ok()?,
+        host_id: host.host_id.clone(),
+        file_type: file_type.to_string(),
+        ext: ext.to_string(),
+    })
+});
+
+// 2. 批量并发下载 + 提取 EXIF
+let exif_results = batch_exif.call(exif_reqs).await?;
+
+// 3. 构造 TagRequest（只取成功的 EXIF 结果）
+let tag_reqs = exif_results.into_iter().filter_map(|r| {
+    r.ok()?.into_some()?.let(|exif_data| TagRequest {
+        host_id: host.host_id.clone(),
+        key: exif_data.key.clone(),
+        exif_data,
+        file_type: ...,
+    })
+});
+
+// 4. 批量并发标签解析
+let tag_results = batch_tag.call(tag_reqs).await?;
 ```
 
 ---
@@ -228,12 +247,13 @@ for entry in &pending {
 
 | 文件 | 变更 | 说明 |
 |------|------|------|
-| `scan/process.rs` | 修改 | 移除内联的 EXIF 下载/提取/标签逻辑，改用 ExifService + TagService |
-| `scan/exif_service.rs` | 新建 | `ChunkedDownloadService` + `ExtractionLayer` + `ExifService` 组合 |
+| `scan/process.rs` | 修改 | 移除内联的 EXIF 下载/提取/标签逻辑，改用 BatchService<ExifService> + BatchService<TagService> |
+| `scan/exif_service.rs` | 新建 | `ChunkedDownloadService` + `ExtractionLayer` 组合 |
 | `scan/tag_service.rs` | 新建 | `TagService` 实现 |
-| `scan/mod.rs` | 修改 | 添加 `pub mod exif_service; pub mod tag_service;` |
+| `scan/batch_service.rs` | 新建 | `BatchService<I, Req, Res>` 泛型批量并发 Service |
+| `scan/mod.rs` | 修改 | 添加 `pub mod exif_service; pub mod tag_service; pub mod batch_service;` |
 | `scan/pipeline.rs` | 修改 | 添加 `ExifRequest`、`ExifResult`、`ExifData`、`TagRequest`、`TagResponse` 类型 |
-| `cmd_scan.rs` / `scanner.rs` | 修改 | 构建时创建 ExifService + TagService 并传入 ProcessLayer |
+| `cmd_scan.rs` / `scanner.rs` | 修改 | 构建时创建 ExifService + TagService + BatchService 并传入 ProcessLayer |
 
 ---
 
