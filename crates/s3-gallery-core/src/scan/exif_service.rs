@@ -47,7 +47,7 @@ impl Service<ExifRequest> for ExifService {
             let mut registry = ExtractorRegistry::new();
             registry.register(Box::new(ExifExtractor::new()));
             if registry.find(&req.file_type, &req.ext).is_empty() {
-                let _ = sqlx::query(
+                let _result = sqlx::query(
                     "UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?",
                 )
                 .bind(&req.host_id)
@@ -62,7 +62,7 @@ impl Service<ExifRequest> for ExifService {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::warn!(key = %req.key, error = %e, "failed to download range for metadata");
-                    let _ = sqlx::query(
+                    let _result = sqlx::query(
                         "UPDATE files SET metadata_state = 'failed' WHERE host_id = ? AND key = ?",
                     )
                     .bind(&req.host_id)
@@ -78,7 +78,7 @@ impl Service<ExifRequest> for ExifService {
                 Ok(items) => items,
                 Err(e) => {
                     tracing::warn!(key = %req.key, error = %e, "metadata extraction failed");
-                    let _ = sqlx::query(
+                    let _result = sqlx::query(
                         "UPDATE files SET metadata_state = 'failed' WHERE host_id = ? AND key = ?",
                     )
                     .bind(&req.host_id)
@@ -90,7 +90,7 @@ impl Service<ExifRequest> for ExifService {
             };
 
             if items.is_empty() {
-                let _ = sqlx::query(
+                let _result = sqlx::query(
                     "UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?",
                 )
                 .bind(&req.host_id)

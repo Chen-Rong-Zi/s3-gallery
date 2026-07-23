@@ -68,6 +68,8 @@ where
                 let mut inner = inner.clone();
                 let permit = semaphore.clone().acquire_owned();
                 tasks.push(async move {
+                    // SAFETY: semaphore is created locally and never closed
+                    #[allow(clippy::expect_used)]
                     let _permit = permit.await.expect("semaphore closed");
                     inner.call(req).await
                 });

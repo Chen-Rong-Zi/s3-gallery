@@ -3,9 +3,6 @@ use std::sync::Arc;
 use tower::Service;
 use tower::ServiceBuilder;
 
-use crate::classify::classifier::{
-    classify_extension, content_type_from_extension, parse_extension,
-};
 use crate::error::Result;
 use crate::s3::layers::{LogLayer, TrafficLayer};
 use crate::s3::s3_service::S3Service;
@@ -16,7 +13,7 @@ use crate::scan::diff_layer::DiffLayer;
 use crate::scan::discover::DiscoverLayer;
 use crate::scan::pipeline::ScanRequest;
 use crate::scan::process::ProcessLayer;
-use crate::types::{BucketName, FileType, ObjectKey};
+use crate::types::{BucketName, ObjectKey};
 
 /// Configuration for a scan operation.
 pub struct ScanConfig {
@@ -124,26 +121,6 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
     }
 }
 
-/// Classify a file by its extension.
-fn classify_file(key: &ObjectKey) -> FileType {
-    if let Some(name) = key.file_name() {
-        if let Some(ext) = parse_extension(name) {
-            return classify_extension(&ext);
-        }
-    }
-    FileType::Unknown
-}
-
-/// Get content type from file extension.
-fn get_content_type(key: &ObjectKey) -> Option<String> {
-    if let Some(name) = key.file_name() {
-        if let Some(ext) = parse_extension(name) {
-            return content_type_from_extension(&ext);
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,41 +130,6 @@ mod tests {
     use crate::s3::client::S3Client;
     use crate::s3::mock::MockS3Client;
     use tempfile::tempdir;
-
-    #[tokio::test]
-    async fn test_classify_file_jpg() -> Result<()> {
-        let key = ObjectKey::new("photos/test.jpg")?;
-        assert_eq!(classify_file(&key), FileType::Jpeg);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_classify_file_unknown() -> Result<()> {
-        let key = ObjectKey::new("files/data.xyz")?;
-        assert_eq!(classify_file(&key), FileType::Unknown);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_classify_file_no_extension() -> Result<()> {
-        let key = ObjectKey::new("files/README")?;
-        assert_eq!(classify_file(&key), FileType::Unknown);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_get_content_type_jpg() -> Result<()> {
-        let key = ObjectKey::new("photos/test.jpg")?;
-        assert_eq!(get_content_type(&key), Some("image/jpeg".to_string()));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_get_content_type_unknown() -> Result<()> {
-        let key = ObjectKey::new("files/data.xyz")?;
-        assert_eq!(get_content_type(&key), None);
-        Ok(())
-    }
 
     #[tokio::test]
     async fn test_scan_empty_bucket() -> Result<()> {

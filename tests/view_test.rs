@@ -3,13 +3,9 @@
 //! LocalView is a pure DB query layer (no S3 field).  RemoteView wraps S3
 //! operations on top of a LocalView.
 
-use std::sync::Arc;
-
 use s3_gallery_core::db::models::FileEntry;
 use s3_gallery_core::error::Result;
-use s3_gallery_core::s3::client::S3Client;
-use s3_gallery_core::s3::mock::MockS3Client;
-use s3_gallery_core::types::{ObjectKey, SortField, SortOrder};
+use s3_gallery_core::types::{SortField, SortOrder};
 use s3_gallery_core::view::export::ExportFormat;
 use s3_gallery_core::view::LocalView;
 

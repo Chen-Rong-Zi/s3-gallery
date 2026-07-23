@@ -70,7 +70,7 @@ where
                 // Build operation-level breakdown under "scan" stage
                 let mut scan_stage = HashMap::new();
                 for op_idx in 0..counters.per_operation.len() {
-                    let bytes = counters.per_operation[op_idx].load(Ordering::Relaxed);
+                    let bytes = counters.per_operation.get(op_idx).map(|c| c.load(Ordering::Relaxed)).unwrap_or(0);
                     if bytes > 0 {
                         let op_name = match op_idx {
                             0 => "GetObject",

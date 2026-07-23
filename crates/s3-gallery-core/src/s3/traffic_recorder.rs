@@ -87,7 +87,15 @@ impl TrafficCounters {
             per_operation: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
+}
 
+impl Default for TrafficCounters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TrafficCounters {
     pub fn record(&self, record: &TrafficRecord) {
         self.request_count.fetch_add(record.count, Ordering::Relaxed);
         if record.direction == "download" {
@@ -97,8 +105,9 @@ impl TrafficCounters {
             self.upload_bytes
                 .fetch_add(record.bytes, Ordering::Relaxed);
         }
-        self.per_operation[record.operation as usize]
-            .fetch_add(record.bytes, Ordering::Relaxed);
+        self.per_operation
+            .get(record.operation as usize)
+            .map(|c| c.fetch_add(record.bytes, Ordering::Relaxed));
     }
 }
 

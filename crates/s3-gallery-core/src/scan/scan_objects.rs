@@ -19,6 +19,10 @@ pub struct ScanObjectEntry {
 
 impl ScanObjectEntry {
     /// Batch insert scan objects from an S3 listing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::DbError` if the database operation fails.
     pub async fn batch_insert(
         pool: &SqlitePool,
         scan_id: &str,
@@ -54,6 +58,10 @@ impl ScanObjectEntry {
     }
 
     /// List all scan objects for a given scan_id and host_id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::DbError` if the database operation fails.
     pub async fn list_by_scan(
         pool: &SqlitePool,
         scan_id: &str,
@@ -70,6 +78,10 @@ impl ScanObjectEntry {
     }
 
     /// Delete all scan objects for a given scan_id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::DbError` if the database operation fails.
     pub async fn delete_by_scan(pool: &SqlitePool, scan_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM scan_objects WHERE scan_id = ?")
             .bind(scan_id)

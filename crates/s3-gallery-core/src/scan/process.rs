@@ -134,7 +134,7 @@ where
                     let mut tag_reqs = Vec::new();
                     let mut failed = 0u64;
 
-                    for (ctx, result) in contexts.into_iter().zip(exif_results.into_iter()) {
+                    for (ctx, result) in contexts.into_iter().zip(exif_results) {
                         match result {
                             Ok(ExifResult::Some(data)) => {
                                 tag_reqs.push(TagRequest {

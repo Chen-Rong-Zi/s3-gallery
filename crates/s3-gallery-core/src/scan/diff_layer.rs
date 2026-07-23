@@ -63,16 +63,15 @@ where
                     // Convert to ObjectSummary for diff
                     let s3_objects: Vec<ObjectSummary> = scan_entries
                         .iter()
-                        .map(|entry| {
-                            // Safety: DB data was validated on insert, so new() always succeeds
-                            ObjectSummary {
-                                key: ObjectKey::new(entry.key.clone())
-                                    .expect("valid key from DB"),
-                                etag: Etag::new(entry.etag.clone())
-                                    .expect("valid etag from DB"),
+                        .filter_map(|entry| {
+                            let key = ObjectKey::new(entry.key.clone()).ok()?;
+                            let etag = Etag::new(entry.etag.clone()).ok()?;
+                            Some(ObjectSummary {
+                                key,
+                                etag,
                                 size: FileSize::new(entry.size as u64),
                                 last_modified: entry.last_modified.clone(),
-                            }
+                            })
                         })
                         .collect();
 

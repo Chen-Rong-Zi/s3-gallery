@@ -52,7 +52,7 @@ pub async fn run_init(
     // Upload to OSS
     let config_key = host.config_path();
     let json_bytes = json.into_bytes();
-    s3.put_object(&bucket, &config_key, &json_bytes).await?;
+    s3.put_object(&bucket, config_key, &json_bytes).await?;
 
     let prefix_str = prefix.unwrap_or("");
     println!("Host initialized:");

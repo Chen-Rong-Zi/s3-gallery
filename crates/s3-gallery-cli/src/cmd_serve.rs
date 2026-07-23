@@ -131,7 +131,6 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
         s3_stack,
         traffic_recorder: Some(recorder),
         prefix,
-        cli_endpoint: cli.endpoint.clone(),
         cli_region: cli.region.clone(),
         access_key: cli.access_key.clone(),
         secret_key: cli.secret_key.clone(),

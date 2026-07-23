@@ -61,7 +61,7 @@ pub async fn run_db(cli: &Cli, host: &str, cmd: &DbCommands) -> Result<()> {
         }
         DbCommands::Lock => {
             let lock_key = host_id.lock_path();
-            let locked = s3.object_exists(&bucket, &lock_key).await?;
+            let locked = s3.object_exists(&bucket, lock_key).await?;
             if locked {
                 println!("Lock is held.");
             } else {

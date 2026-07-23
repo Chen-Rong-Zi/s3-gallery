@@ -20,8 +20,6 @@ pub struct AppState {
     pub traffic_recorder: Option<Arc<TrafficRecorder>>,
     /// Optional prefix filter from CLI --prefix.
     pub prefix: Option<String>,
-    /// CLI endpoint for fallback when host has no stored endpoint.
-    pub cli_endpoint: String,
     /// CLI region for fallback when host has no stored region.
     pub cli_region: String,
     /// CLI access key for S3 connections.
@@ -36,15 +34,6 @@ impl AppState {
     /// Find a host config by host_id.
     pub fn get_host(&self, host_id: &str) -> Option<&HostConfigEntry> {
         self.hosts.iter().find(|h| h.host_id == host_id)
-    }
-
-    /// Get the effective endpoint for a host (stored or CLI fallback).
-    pub fn effective_endpoint<'a>(&'a self, host: &'a HostConfigEntry) -> &'a str {
-        if host.endpoint.is_empty() {
-            &self.cli_endpoint
-        } else {
-            &host.endpoint
-        }
     }
 
     /// Get the effective region for a host (stored or CLI fallback).

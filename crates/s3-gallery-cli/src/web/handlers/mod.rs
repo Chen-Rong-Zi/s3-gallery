@@ -35,7 +35,6 @@ pub use traffic_handler::traffic_live;
 pub enum HandlerResult {
     Html(String),
     Json(serde_json::Value),
-    Redirect(String),
     Error(StatusCode, serde_json::Value),
 }
 
@@ -44,7 +43,6 @@ impl IntoResponse for HandlerResult {
         match self {
             HandlerResult::Html(html) => Html(html).into_response(),
             HandlerResult::Json(json) => Json(json).into_response(),
-            HandlerResult::Redirect(url) => axum::response::Redirect::to(&url).into_response(),
             HandlerResult::Error(status, json) => (status, Json(json)).into_response(),
         }
     }

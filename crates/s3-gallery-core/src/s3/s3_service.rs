@@ -42,6 +42,11 @@ pub enum S3Response {
 }
 
 impl S3Response {
+    /// Convert response into `Vec<u8>` for GetObject.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::Internal` if the response is not a GetObject variant.
     pub fn try_into_get_object(self) -> Result<Vec<u8>> {
         match self {
             Self::GetObject(data) => Ok(data),
@@ -49,6 +54,11 @@ impl S3Response {
         }
     }
 
+    /// Convert response into `Vec<u8>` for GetObjectRange.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::Internal` if the response is not a GetObjectRange variant.
     pub fn try_into_get_object_range(self) -> Result<Vec<u8>> {
         match self {
             Self::GetObjectRange(data) => Ok(data),
@@ -56,6 +66,11 @@ impl S3Response {
         }
     }
 
+    /// Convert response into `Vec<ObjectSummary>` for ListObjects.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::Internal` if the response is not a ListObjects variant.
     pub fn try_into_list_objects(self) -> Result<Vec<ObjectSummary>> {
         match self {
             Self::ListObjects(objs) => Ok(objs),
@@ -63,6 +78,11 @@ impl S3Response {
         }
     }
 
+    /// Convert response into `ObjectMetadata` for HeadObject.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::Internal` if the response is not a HeadObject variant.
     pub fn try_into_head_object(self) -> Result<ObjectMetadata> {
         match self {
             Self::HeadObject(meta) => Ok(meta),
@@ -70,6 +90,11 @@ impl S3Response {
         }
     }
 
+    /// Convert response into `()` for PutObject.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::Internal` if the response is not a PutObject variant.
     pub fn try_into_put_object(self) -> Result<()> {
         match self {
             Self::PutObject(()) => Ok(()),
@@ -77,6 +102,11 @@ impl S3Response {
         }
     }
 
+    /// Convert response into `bool` for PutObjectIfNoneMatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::Internal` if the response is not a PutObjectIfNoneMatch variant.
     pub fn try_into_put_object_if_none_match(self) -> Result<bool> {
         match self {
             Self::PutObjectIfNoneMatch(b) => Ok(b),
@@ -84,6 +114,11 @@ impl S3Response {
         }
     }
 
+    /// Convert response into `()` for DeleteObject.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::Internal` if the response is not a DeleteObject variant.
     pub fn try_into_delete_object(self) -> Result<()> {
         match self {
             Self::DeleteObject(()) => Ok(()),
@@ -91,6 +126,11 @@ impl S3Response {
         }
     }
 
+    /// Convert response into `bool` for ObjectExists.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::Internal` if the response is not an ObjectExists variant.
     pub fn try_into_object_exists(self) -> Result<bool> {
         match self {
             Self::ObjectExists(b) => Ok(b),
@@ -118,6 +158,10 @@ impl S3Service {
     }
 
     /// Convenience method: get object content.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError` if the S3 operation fails or the response type is unexpected.
     pub async fn get_object(&mut self, bucket: &BucketName, key: &ObjectKey) -> Result<Vec<u8>> {
         self.call(S3Request::GetObject(bucket.clone(), key.clone()))
             .await?
@@ -125,6 +169,10 @@ impl S3Service {
     }
 
     /// Convenience method: get object byte range.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError` if the S3 operation fails or the response type is unexpected.
     pub async fn get_object_range(
         &mut self,
         bucket: &BucketName,
@@ -138,6 +186,10 @@ impl S3Service {
     }
 
     /// Convenience method: list objects with prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError` if the S3 operation fails or the response type is unexpected.
     pub async fn list_objects(
         &mut self,
         bucket: &BucketName,
@@ -149,6 +201,10 @@ impl S3Service {
     }
 
     /// Convenience method: head object metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError` if the S3 operation fails or the response type is unexpected.
     pub async fn head_object(&mut self, bucket: &BucketName, key: &ObjectKey) -> Result<ObjectMetadata> {
         self.call(S3Request::HeadObject(bucket.clone(), key.clone()))
             .await?
@@ -156,6 +212,10 @@ impl S3Service {
     }
 
     /// Convenience method: put object.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError` if the S3 operation fails or the response type is unexpected.
     pub async fn put_object(&mut self, bucket: &BucketName, key: &ObjectKey, body: &[u8]) -> Result<()> {
         self.call(S3Request::PutObject(bucket.clone(), key.clone(), body.to_vec()))
             .await?
@@ -163,6 +223,10 @@ impl S3Service {
     }
 
     /// Convenience method: put object if not exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError` if the S3 operation fails or the response type is unexpected.
     pub async fn put_object_if_none_match(
         &mut self,
         bucket: &BucketName,
@@ -175,6 +239,10 @@ impl S3Service {
     }
 
     /// Convenience method: delete object.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError` if the S3 operation fails or the response type is unexpected.
     pub async fn delete_object(&mut self, bucket: &BucketName, key: &ObjectKey) -> Result<()> {
         self.call(S3Request::DeleteObject(bucket.clone(), key.clone()))
             .await?
@@ -182,6 +250,10 @@ impl S3Service {
     }
 
     /// Convenience method: check if object exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError` if the S3 operation fails or the response type is unexpected.
     pub async fn object_exists(&mut self, bucket: &BucketName, key: &ObjectKey) -> Result<bool> {
         self.call(S3Request::ObjectExists(bucket.clone(), key.clone()))
             .await?
@@ -227,7 +299,7 @@ impl Service<S3Request> for S3Service {
                     inner.object_exists(&b, &k).await.map(S3Response::ObjectExists)
                 }
             };
-            result.map_err(|e| e)
+            result
         })
     }
 }
