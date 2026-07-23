@@ -42,46 +42,14 @@ pub struct ScanResult {
     pub duration_secs: f64,
 }
 
-/// Run a full scan: list all objects, classify, update DB, extract metadata.
-///
-/// This is the main entry point for scanning an OSS bucket. It:
-/// 1. Acquires a distributed lock to prevent concurrent scans
-/// 2. Lists all objects from S3
-/// 3. Diffs against existing DB state
-/// 4. Updates DB with new/changed/deleted files
-/// 5. (Optionally) Extracts metadata and generates thumbnails
-/// 6. Updates scan metadata
-/// 7. Releases the lock
+/// Core scan logic — pure business logic, no lock acquisition.
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - Lock acquisition fails
-/// - S3 listing fails
-/// - Database operations fail
-pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
+/// Returns an error if any S3 or database operation fails.
+async fn scan_core(config: ScanConfig) -> Result<ScanResult> {
     let start = Instant::now();
     let _limiter = ConcurrencyLimiter::new(config.concurrency);
-
-    // Step 1: Acquire lock
-    // Lock key is at bucket root
-    let lock_key = ObjectKey::new("s3-gallery.lock".to_string())
-        .map_err(|e| S3GalleryError::Internal(format!("Failed to create lock key: {}", e)))?;
-
-    let guard = acquire_lock(
-        config.s3.clone(),
-        config.bucket.clone(),
-        lock_key,
-        config.client_id.clone(),
-    )
-    .await?;
-
-    tracing::info!(
-        target: "s3_gallery::scan",
-        prefix = %config.prefix,
-        client_id = %config.client_id,
-        "Scan started"
-    );
 
     // Step 2: List all objects from S3, filter out .s3-gallery directory
     let all_objects = config
@@ -273,9 +241,6 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
         );
     }
 
-    // Step 9: Release lock
-    guard.release().await?;
-
     let duration = start.elapsed();
 
     tracing::info!(
@@ -297,6 +262,53 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
         metadata_extracted,
         duration_secs: duration.as_secs_f64(),
     })
+}
+
+/// Run a full scan: list all objects, classify, update DB, extract metadata.
+///
+/// This is the main entry point for scanning an OSS bucket. It:
+/// 1. Acquires a distributed lock to prevent concurrent scans
+/// 2. Lists all objects from S3
+/// 3. Diffs against existing DB state
+/// 4. Updates DB with new/changed/deleted files
+/// 5. (Optionally) Extracts metadata and generates thumbnails
+/// 6. Updates scan metadata
+/// 7. Releases the lock
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Lock acquisition fails
+/// - S3 listing fails
+/// - Database operations fail
+pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
+    tracing::info!(
+        target: "s3_gallery::scan",
+        prefix = %config.prefix,
+        client_id = %config.client_id,
+        "Scan started"
+    );
+
+    // Step 1: Acquire lock
+    // Lock key is at bucket root
+    let lock_key = ObjectKey::new("s3-gallery.lock".to_string())
+        .map_err(|e| S3GalleryError::Internal(format!("Failed to create lock key: {}", e)))?;
+
+    let guard = acquire_lock(
+        config.s3.clone(),
+        config.bucket.clone(),
+        lock_key,
+        config.client_id.clone(),
+    )
+    .await?;
+
+    // Steps 2-8: Core business logic
+    let result = scan_core(config).await;
+
+    // Step 9: Release lock
+    guard.release().await?;
+
+    result
 }
 
 /// Process metadata for a single object: download, extract, store, tag.
