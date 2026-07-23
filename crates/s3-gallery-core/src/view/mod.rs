@@ -7,7 +7,6 @@
 pub mod duplicates;
 pub mod export;
 pub mod ls;
-pub mod remote;
 pub mod search;
 pub mod stat;
 pub mod tags;
@@ -16,7 +15,6 @@ pub mod timeline_gallery;
 pub mod traffic;
 pub mod tree;
 
-pub use remote::RemoteView;
 
 use sqlx::SqlitePool;
 
