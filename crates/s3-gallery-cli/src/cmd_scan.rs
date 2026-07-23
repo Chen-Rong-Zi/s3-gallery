@@ -106,7 +106,8 @@ pub async fn run_sync(cli: &Cli, prefix: Option<String>, opts: ScanOptions) -> R
     let db_key = ObjectKey::new("s3-gallery.db".to_string())
         .map_err(|e| S3GalleryError::Internal(format!("Invalid db key: {e}")))?;
 
-    match s3.get_object(&bucket, &db_key).await {
+    let mut s3_svc = S3Service::new(s3.clone());
+    match s3_svc.get_object(&bucket, &db_key).await {
         Ok(data) => {
             tracing::info!("pulled remote DB ({} bytes)", data.len());
             if let Some(parent) = cli.db_path.parent() {
@@ -214,7 +215,8 @@ async fn run_scan_core(
     let db_key = ObjectKey::new("s3-gallery.db".to_string())
         .map_err(|e| S3GalleryError::Internal(format!("Invalid db key: {e}")))?;
     let db_data = std::fs::read(db_path).map_err(S3GalleryError::IoError)?;
-    s3.put_object(bucket, &db_key, &db_data).await?;
+    let mut s3_svc = S3Service::new(s3.clone());
+    s3_svc.put_object(bucket, &db_key, &db_data).await?;
     println!("  DB pushed to remote.");
 
     Ok(())
