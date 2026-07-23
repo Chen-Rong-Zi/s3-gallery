@@ -5,5 +5,6 @@ pub mod config;
 pub mod lock;
 pub mod logged;
 pub mod mock;
+pub mod traffic_persist;
 pub mod traffic_recorder;
 pub mod real;
