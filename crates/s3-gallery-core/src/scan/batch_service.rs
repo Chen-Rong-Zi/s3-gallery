@@ -2,6 +2,7 @@
 //!
 //! 包装任意 `Service<Req, Response = Res>`，接受 `IntoIterator<Item = Req>`，
 //! 内部用 FuturesUnordered + Semaphore 并发执行，返回 `Vec<Result<Res, Error>>`。
+//! **重要：结果按插入顺序返回，不受完成顺序影响。**
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -63,20 +64,40 @@ where
         let semaphore = Arc::new(Semaphore::new(self.max_concurrency));
 
         Box::pin(async move {
-            let tasks = FuturesUnordered::new();
-            for req in reqs.into_iter() {
+            let mut tasks = FuturesUnordered::new();
+            for (idx, req) in reqs.into_iter().enumerate() {
                 let mut inner = inner.clone();
                 let permit = semaphore.clone().acquire_owned();
                 tasks.push(async move {
                     // SAFETY: semaphore is created locally and never closed
                     #[allow(clippy::expect_used)]
                     let _permit = permit.await.expect("semaphore closed");
-                    inner.call(req).await
+                    let result = inner.call(req).await;
+                    (idx, result)
                 });
             }
 
-            let results: Vec<_> = tasks.collect().await;
-            Ok(results)
+            let mut results: Vec<Option<std::result::Result<Res, I::Error>>> =
+                Vec::with_capacity(tasks.len());
+            // Use placeholder values; we fill every slot by index
+            for _ in 0..tasks.len() {
+                results.push(None);
+            }
+            while let Some((idx, result)) = tasks.next().await {
+                // SAFETY: idx is in bounds because we enumerated reqs and allocated
+                // exactly tasks.len() slots
+                if let Some(slot) = results.get_mut(idx) {
+                    *slot = Some(result);
+                }
+            }
+            // SAFETY: every slot was filled by the while loop above;
+            // the if-condition above always matches because idx < tasks.len()
+            // We use a helper fn to avoid #[allow] on expression for expect_used
+            #[inline(always)]
+            fn take_all<T>(v: Vec<Option<T>>) -> Vec<T> {
+                v.into_iter().map(|r| r.unwrap_or_else(|| unreachable!())).collect()
+            }
+            Ok(take_all(results))
         })
     }
 }
@@ -114,5 +135,23 @@ mod tests {
         let mut batch = BatchService::new(svc, 2);
         let results: Vec<std::result::Result<i32, String>> = batch.call(1..=5).await.unwrap();
         assert_eq!(results.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_batch_service_preserves_order() {
+        // Tasks that complete out of order (smaller input = slower)
+        let svc = service_fn(|req: u64| async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(req)).await;
+            Ok::<_, String>(req)
+        });
+        let mut batch = BatchService::new(svc, 10);
+        // Input: [100, 5, 1]  — completion order: [1, 5, 100]
+        let results: Vec<std::result::Result<u64, String>> =
+            batch.call(vec![100, 5, 1]).await.unwrap();
+        // Must be in insertion order: [100, 5, 1]
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].as_ref().unwrap(), &100);
+        assert_eq!(results[1].as_ref().unwrap(), &5);
+        assert_eq!(results[2].as_ref().unwrap(), &1);
     }
 }
