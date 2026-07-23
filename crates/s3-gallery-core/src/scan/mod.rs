@@ -3,6 +3,7 @@ pub mod batch_service;
 pub mod diff;
 pub mod diff_layer;
 pub mod discover;
+pub mod exif_service;
 pub mod pipeline;
 pub mod process;
 pub mod scan_objects;
