@@ -165,7 +165,7 @@ async fn run_scan_core(
 
     let mut pipeline = ServiceBuilder::new()
         .layer(AggregateLayer::new(pool.clone(), recorder.counters.clone()))
-        .layer(ProcessLayer::new(pool.clone(), exif_s3))
+        .layer(ProcessLayer::new(pool.clone(), exif_s3, opts.concurrency))
         .layer(DiffLayer::new(pool.clone()))
         .layer(DiscoverLayer::new(pool.clone()))
         .service(discover_s3);

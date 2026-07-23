@@ -30,6 +30,16 @@ impl<I, Req, Res> BatchService<I, Req, Res> {
     }
 }
 
+impl<I: Clone, Req, Res> Clone for BatchService<I, Req, Res> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            max_concurrency: self.max_concurrency,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
 impl<I, Req, Res, Iter> Service<Iter> for BatchService<I, Req, Res>
 where
     I: Service<Req, Response = Res> + Clone + Send + 'static,

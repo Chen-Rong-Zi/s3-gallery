@@ -84,7 +84,7 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
             config.db.clone(),
             recorder.counters.clone(),
         ))
-        .layer(ProcessLayer::new(config.db.clone(), exif_s3))
+        .layer(ProcessLayer::new(config.db.clone(), exif_s3, config.concurrency))
         .layer(DiffLayer::new(config.db.clone()))
         .layer(DiscoverLayer::new(config.db.clone()))
         .service(discover_s3);

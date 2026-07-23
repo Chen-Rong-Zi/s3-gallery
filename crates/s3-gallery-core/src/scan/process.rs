@@ -1,65 +1,80 @@
-//! ProcessLayer — extracts metadata for pending files.
+//! ProcessLayer — orchestrates EXIF extraction and tag parsing.
 //!
-//! This is the third pipeline layer, generic over inner service.
+//! Calls inner, queries pending files, then runs two-phase batch processing:
+//! 1. `BatchService<ExifService>`: concurrent download + EXIF extraction
+//! 2. `BatchService<TagService>`: concurrent tag parsing
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use tokio::sync::Mutex;
 use tower::service_fn;
 use tower::util::BoxService;
 use tower::{Layer, Service};
 
-use crate::db::models::{FileEntry, MetadataEntry, TagEntry, FileTagEntry};
+use crate::classify::classifier::{classify_extension, parse_extension};
+use crate::db::models::FileEntry;
 use crate::error::S3GalleryError;
-use crate::extractor::exif::ExifExtractor;
-use crate::extractor::registry::ExtractorRegistry;
-use crate::extractor::tag_rules::{evaluate_all, TagRule};
-use crate::s3::s3_service::S3Service;
-use crate::scan::pipeline::{HostProcessResult, ScanRequest, ScanResponse};
-use crate::classify::classifier::parse_extension;
+use crate::scan::batch_service::BatchService;
+use crate::scan::exif_service::ExifService;
+use crate::scan::pipeline::{
+    ExifRequest, ExifResult, HostProcessResult, ScanRequest, ScanResponse, TagRequest,
+    TagResponse,
+};
+use crate::scan::tag_service::TagService;
 use crate::types::ObjectKey;
 
 /// ProcessLayer wraps an inner service with metadata extraction.
 pub struct ProcessLayer {
     db: sqlx::SqlitePool,
-    exif_s3: S3Service,
+    batch_exif: BatchService<ExifService, ExifRequest, ExifResult>,
+    batch_tag: BatchService<TagService, TagRequest, TagResponse>,
 }
 
 impl ProcessLayer {
-    pub fn new(db: sqlx::SqlitePool, exif_s3: S3Service) -> Self {
-        Self { db, exif_s3 }
+    pub fn new(
+        db: sqlx::SqlitePool,
+        exif_s3: crate::s3::s3_service::S3Service,
+        concurrency: usize,
+    ) -> Self {
+        let exif_service = ExifService::new(exif_s3, db.clone());
+        let tag_service = TagService::new(db.clone());
+        Self {
+            db,
+            batch_exif: BatchService::new(exif_service, concurrency),
+            batch_tag: BatchService::new(tag_service, concurrency),
+        }
     }
 }
 
 impl<I> Layer<I> for ProcessLayer
 where
-    I: Service<ScanRequest, Response = ScanResponse, Error = crate::error::S3GalleryError>
-        + Send
-        + 'static,
+    I: Service<ScanRequest, Response = ScanResponse, Error = S3GalleryError> + Send + 'static,
     I::Future: Send,
 {
-    type Service = BoxService<ScanRequest, ScanResponse, crate::error::S3GalleryError>;
+    type Service = BoxService<ScanRequest, ScanResponse, S3GalleryError>;
 
     fn layer(&self, inner: I) -> Self::Service {
         let db = self.db.clone();
-        let exif_s3 = self.exif_s3.clone();
+        let batch_exif = self.batch_exif.clone();
+        let batch_tag = self.batch_tag.clone();
         let inner = Arc::new(Mutex::new(inner));
+
         BoxService::new(service_fn(move |req: ScanRequest| {
             let db = db.clone();
-            let mut exif_s3 = exif_s3.clone();
             let inner = inner.clone();
-            async move {
-                let extract_metadata = req.extract_metadata;
-                let bucket = req.bucket.clone();
+            let mut batch_exif = batch_exif.clone();
+            let mut batch_tag = batch_tag.clone();
+            let extract_metadata = req.extract_metadata;
+            let bucket = req.bucket.clone();
 
+            async move {
                 // 1. Call inner (DiffLayer -> DiscoverLayer)
                 let mut resp = {
                     let mut inner = inner.lock().await;
                     inner.call(req).await?
                 };
 
-                // 2. Extract metadata for pending files if enabled
+                // 2. Process pending files for each host
                 let mut process_results = Vec::new();
                 for host in &resp.hosts {
                     if !extract_metadata {
@@ -71,7 +86,7 @@ where
                         continue;
                     }
 
-                    // Find pending files for this host
+                    // Find pending files
                     let pending: Vec<FileEntry> = sqlx::query_as(
                         "SELECT * FROM files WHERE host_id = ? AND metadata_state = 'pending' AND is_deleted = 0",
                     )
@@ -80,142 +95,77 @@ where
                     .await
                     .map_err(|e| S3GalleryError::DbError(format!("Failed to query pending files: {e}")))?;
 
-                    let mut registry = ExtractorRegistry::new();
-                    registry.register(Box::new(ExifExtractor::new()));
-                    let tag_rules = TagRule::default_rules();
+                    // Phase 1: Build ExifRequests with context tracking
+                    struct ExifContext {
+                        key: String,
+                        file_type: String,
+                        host_id: String,
+                    }
 
-                    let mut processed = 0u64;
-                    let mut failed = 0u64;
+                    let mut contexts = Vec::new();
+                    let mut exif_reqs = Vec::new();
 
                     for entry in &pending {
                         let key_str = entry.key.as_str();
                         let file_name = key_str.rsplit('/').next().unwrap_or(key_str);
-                        let ext = match parse_extension(file_name) {
-                            Some(e) => e,
-                            None => continue,
-                        };
-
-                        // Check if any extractor supports this file type
-                        let file_type = crate::classify::classifier::classify_extension(&ext).to_string();
-                        if registry.find(&file_type, ext.as_str()).is_empty() {
-                            // Mark as extracted so we don't retry
-                            let _ = sqlx::query(
-                                "UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?",
-                            )
-                            .bind(&host.host_id)
-                            .bind(key_str)
-                            .execute(&db)
-                            .await;
-                            continue;
-                        }
-
-                        // Download 64KB for EXIF
-                        let obj_key = match ObjectKey::new(key_str.to_string()) {
-                            Ok(k) => k,
-                            Err(_) => continue,
-                        };
-
-                        let data = match exif_s3
-                            .get_object_range(&bucket, &obj_key, 0, 65536)
-                            .await
-                        {
-                            Ok(d) => d,
-                            Err(e) => {
-                                tracing::warn!(key = %key_str, error = %e, "failed to download range for metadata");
-                                let _ = sqlx::query(
-                                    "UPDATE files SET metadata_state = 'failed' WHERE host_id = ? AND key = ?",
-                                )
-                                .bind(&host.host_id)
-                                .bind(key_str)
-                                .execute(&db)
-                                .await;
-                                failed += 1;
-                                continue;
+                        if let Some(ext) = parse_extension(file_name) {
+                            let file_type = classify_extension(&ext).to_string();
+                            if let Ok(key) = ObjectKey::new(entry.key.clone()) {
+                                contexts.push(ExifContext {
+                                    key: entry.key.clone(),
+                                    file_type: file_type.clone(),
+                                    host_id: host.host_id.clone(),
+                                });
+                                exif_reqs.push(ExifRequest {
+                                    bucket: bucket.clone(),
+                                    key,
+                                    host_id: host.host_id.clone(),
+                                    file_type,
+                                    ext: ext.to_string(),
+                                });
                             }
-                        };
+                        }
+                    }
 
-                        // Extract metadata
-                        let items = match registry.extract_all(&data, &file_type, ext.as_str()).await {
-                            Ok(items) => items,
-                            Err(e) => {
-                                tracing::warn!(key = %key_str, error = %e, "metadata extraction failed");
-                                let _ = sqlx::query(
-                                    "UPDATE files SET metadata_state = 'failed' WHERE host_id = ? AND key = ?",
-                                )
-                                .bind(&host.host_id)
-                                .bind(key_str)
-                                .execute(&db)
-                                .await;
-                                failed += 1;
-                                continue;
+                    // Phase 1: Batch EXIF download + extraction
+                    let exif_results = batch_exif.call(exif_reqs).await?;
+
+                    // Phase 2: Build TagRequests from successful EXIF results
+                    let mut tag_reqs = Vec::new();
+                    let mut failed = 0u64;
+
+                    for (ctx, result) in contexts.into_iter().zip(exif_results.into_iter()) {
+                        match result {
+                            Ok(ExifResult::Some(data)) => {
+                                tag_reqs.push(TagRequest {
+                                    host_id: ctx.host_id,
+                                    key: ctx.key,
+                                    exif_data: data,
+                                    file_type: ctx.file_type,
+                                });
                             }
-                        };
-
-                        if items.is_empty() {
-                            let _ = sqlx::query(
-                                "UPDATE files SET metadata_state = 'extracted' WHERE host_id = ? AND key = ?",
-                            )
-                            .bind(&host.host_id)
-                            .bind(key_str)
-                            .execute(&db)
-                            .await;
-                            continue;
+                            Ok(ExifResult::None) => {
+                                // ExifService already set metadata_state = 'extracted'
+                            }
+                            Err(_) => {
+                                failed += 1;
+                            }
                         }
+                    }
 
-                        // Store metadata
-                        let now = Utc::now().to_rfc3339();
-                        for item in &items {
-                            MetadataEntry::insert(&db, &MetadataEntry {
-                                file_key: key_str.to_string(),
-                                namespace: item.namespace.to_string(),
-                                key: item.key.clone(),
-                                value: item.value.clone(),
-                                extracted_at: now.clone(),
-                                partial: false,
-                            }).await?;
+                    // Phase 2: Batch Tag parsing
+                    let tag_results = batch_tag.call(tag_reqs).await?;
+
+                    let mut processed = 0u64;
+                    for result in tag_results {
+                        match result {
+                            Ok(_) => {
+                                processed += 1;
+                            }
+                            Err(_) => {
+                                failed += 1;
+                            }
                         }
-
-                        // Generate and store tags
-                        let tags = evaluate_all(&tag_rules, &items, &file_type);
-                        for tag in &tags {
-                            let tag_id = TagEntry::ensure_exists(&db, &tag.tag_name, &tag.tag_type).await?;
-                            FileTagEntry::insert(&db, &FileTagEntry {
-                                file_key: key_str.to_string(),
-                                tag_id,
-                            }).await?;
-                        }
-
-                        // Add exif:yes tag
-                        let exif_tag_id = TagEntry::ensure_exists(&db, "exif:yes", "auto").await?;
-                        FileTagEntry::insert(&db, &FileTagEntry {
-                            file_key: key_str.to_string(),
-                            tag_id: exif_tag_id,
-                        }).await?;
-
-                        // Update effective_date
-                        let exif_date = items
-                            .iter()
-                            .find(|m| m.key == "DateTimeOriginal" || m.key == "DateTimeDigitized")
-                            .map(|m| m.value.as_str())
-                            .and_then(|v| v.get(..10))
-                            .map(|d| d.replace(":", "-"));
-                        let effective_date = exif_date
-                            .as_deref()
-                            .unwrap_or_else(|| &entry.last_modified[..10.min(entry.last_modified.len())]).to_string();
-
-                        // SAFETY: effective_date is safe to index because we bound
-                        // the range to the string length via 10.min(len).
-                        sqlx::query(
-                            "UPDATE files SET effective_date = ?, metadata_state = 'extracted' WHERE host_id = ? AND key = ?",
-                        )
-                        .bind(&effective_date)
-                        .bind(&host.host_id)
-                        .bind(key_str)
-                        .execute(&db)
-                        .await
-                        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-
-                        processed += 1;
                     }
 
                     process_results.push(HostProcessResult {
