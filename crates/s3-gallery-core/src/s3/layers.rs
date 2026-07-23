@@ -1,7 +1,8 @@
 //! Tower Layer implementations for S3Service.
 //!
-//! LogLayer wraps S3Service with logging via LoggedS3Client.
-//! TrafficLayer will be added in a later task.
+//! LogLayer and TrafficLayer wrap S3Service directly (they need access to
+//! the inner Arc<dyn S3Client>). Tower built-in layers (BufferLayer, etc.)
+//! wrap from outside.
 
 use std::sync::Arc;
 
@@ -10,6 +11,7 @@ use tower::layer::Layer;
 use crate::s3::client::S3Client;
 use crate::s3::logged::LoggedS3Client;
 use crate::s3::s3_service::S3Service;
+use crate::s3::traffic_recorder::{BusinessS3Client, TrafficRecorder};
 
 /// LogLayer wraps S3Service with logging via LoggedS3Client.
 ///
@@ -22,6 +24,41 @@ impl Layer<S3Service> for LogLayer {
 
     fn layer(&self, inner: S3Service) -> Self::Service {
         S3Service::new(Arc::new(LoggedS3Client::new(inner.into_inner())) as Arc<dyn S3Client>)
+    }
+}
+
+/// TrafficLayer wraps S3Service with per-business traffic recording.
+///
+/// Must be placed at the same level as LogLayer — it needs access to the
+/// inner Arc<dyn S3Client> to wrap it with BusinessS3Client.
+pub struct TrafficLayer {
+    recorder: Arc<TrafficRecorder>,
+    host_id: String,
+    business: String,
+}
+
+impl TrafficLayer {
+    pub fn new(recorder: Arc<TrafficRecorder>, host_id: &str, business: &str) -> Self {
+        Self {
+            recorder,
+            host_id: host_id.to_string(),
+            business: business.to_string(),
+        }
+    }
+}
+
+impl Layer<S3Service> for TrafficLayer {
+    type Service = S3Service;
+
+    fn layer(&self, inner: S3Service) -> Self::Service {
+        S3Service::new(
+            Arc::new(BusinessS3Client::new(
+                inner.into_inner(),
+                &self.host_id,
+                &self.business,
+                self.recorder.clone(),
+            )) as Arc<dyn S3Client>,
+        )
     }
 }
 
