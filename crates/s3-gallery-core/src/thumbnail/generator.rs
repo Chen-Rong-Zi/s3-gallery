@@ -4,8 +4,6 @@ use crate::types::ObjectKey;
 use chrono::Utc;
 use image::ImageFormat;
 use sqlx::SqlitePool;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use tracing;
 
 /// Default thumbnail size (320px on longest side)
@@ -13,6 +11,28 @@ pub const THUMBNAIL_SIZE: u32 = 320;
 
 /// Maximum cache size in bytes (500 MB)
 pub const MAX_CACHE_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Check the thumbnail cache for a given key. Returns None if not cached.
+async fn get_cached_entry(db: &SqlitePool, key: &ObjectKey) -> Result<Option<ThumbnailEntry>> {
+    match ThumbnailEntry::get(db, key.as_str()).await {
+        Ok(entry) => Ok(Some(entry)),
+        Err(S3GalleryError::NotFound(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Store a thumbnail in the cache.
+async fn cache_entry(db: &SqlitePool, key: &ObjectKey, data: &[u8]) -> Result<()> {
+    let entry = ThumbnailEntry {
+        file_key: key.as_str().to_string(),
+        data: data.to_vec(),
+        format: "jpeg".to_string(),
+        width: Some(THUMBNAIL_SIZE as i64),
+        height: None,
+        cached_at: Utc::now().to_rfc3339(),
+    };
+    ThumbnailEntry::insert(db, &entry).await
+}
 
 /// Generate a thumbnail from raw image bytes.
 /// Resizes to 320px on the longest side, encodes as JPEG.
@@ -45,17 +65,11 @@ pub fn generate_thumbnail(data: &[u8]) -> Result<Vec<u8>> {
 /// Thumbnail cache with LRU eviction
 pub struct ThumbnailCache {
     db: SqlitePool,
-    max_cache_bytes: u64,
-    current_bytes: Arc<AtomicU64>,
 }
 
 impl ThumbnailCache {
     pub fn new(db: SqlitePool) -> Self {
-        Self {
-            db,
-            max_cache_bytes: MAX_CACHE_BYTES,
-            current_bytes: Arc::new(AtomicU64::new(0)),
-        }
+        Self { db }
     }
 
     /// Get a cached thumbnail, or generate and cache it
@@ -64,7 +78,7 @@ impl ThumbnailCache {
     /// Returns `S3GalleryError` if the cache lookup fails or thumbnail generation fails.
     pub async fn get_or_generate(&self, key: &ObjectKey, data: &[u8]) -> Result<Vec<u8>> {
         // Try cache first
-        if let Some(entry) = self.get_cached(key).await? {
+        if let Some(entry) = get_cached_entry(&self.db, key).await? {
             tracing::debug!(
                 target: "s3_gallery::thumbnail",
                 key = %key,
@@ -80,65 +94,15 @@ impl ThumbnailCache {
             "Thumbnail cache miss — generating"
         );
         let thumbnail_data = generate_thumbnail(data)?;
-        self.cache(key, &thumbnail_data).await?;
+        if let Err(e) = cache_entry(&self.db, key, &thumbnail_data).await {
+            tracing::warn!(
+                target: "s3_gallery::thumbnail",
+                key = %key,
+                error = %e,
+                "failed to cache thumbnail"
+            );
+        }
         Ok(thumbnail_data)
-    }
-
-    /// Get a cached thumbnail
-    ///
-    /// # Errors
-    /// Returns `S3GalleryError` if the database lookup fails.
-    pub async fn get_cached(&self, key: &ObjectKey) -> Result<Option<ThumbnailEntry>> {
-        match ThumbnailEntry::get(&self.db, key.as_str()).await {
-            Ok(entry) => Ok(Some(entry)),
-            Err(S3GalleryError::NotFound(_)) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Cache a thumbnail
-    ///
-    /// # Errors
-    /// Returns `S3GalleryError` if the database insert fails.
-    pub async fn cache(&self, key: &ObjectKey, data: &[u8]) -> Result<()> {
-        let size = data.len() as u64;
-        let current = self.current_bytes.fetch_add(size, Ordering::Acquire);
-
-        if current + size > self.max_cache_bytes {
-            self.evict_lru().await?;
-        }
-
-        let entry = ThumbnailEntry {
-            file_key: key.as_str().to_string(),
-            data: data.to_vec(),
-            format: "jpeg".to_string(),
-            width: Some(THUMBNAIL_SIZE as i64),
-            height: None, // aspect ratio is preserved
-            cached_at: Utc::now().to_rfc3339(),
-        };
-
-        ThumbnailEntry::insert(&self.db, &entry).await?;
-        tracing::debug!(
-            target: "s3_gallery::thumbnail",
-            key = %key,
-            size = data.len(),
-            "Thumbnail cached"
-        );
-        Ok(())
-    }
-
-    /// Evict oldest thumbnails until below 70% of max
-    async fn evict_lru(&self) -> Result<()> {
-        // Simple approach: reset counter and clear old entries
-        // In production, we'd track access times and evict LRU entries
-        let current = self.current_bytes.load(Ordering::Relaxed);
-        if current < self.max_cache_bytes * 70 / 100 {
-            return Ok(());
-        }
-
-        // Reset current cache size counter
-        self.current_bytes.store(0, Ordering::Release);
-        Ok(())
     }
 }
 
