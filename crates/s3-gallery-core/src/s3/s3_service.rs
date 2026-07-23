@@ -116,6 +116,77 @@ impl S3Service {
     pub fn into_inner(self) -> Arc<dyn S3Client> {
         self.inner
     }
+
+    /// Convenience method: get object content.
+    pub async fn get_object(&mut self, bucket: &BucketName, key: &ObjectKey) -> Result<Vec<u8>> {
+        self.call(S3Request::GetObject(bucket.clone(), key.clone()))
+            .await?
+            .try_into_get_object()
+    }
+
+    /// Convenience method: get object byte range.
+    pub async fn get_object_range(
+        &mut self,
+        bucket: &BucketName,
+        key: &ObjectKey,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<u8>> {
+        self.call(S3Request::GetObjectRange(bucket.clone(), key.clone(), start, end))
+            .await?
+            .try_into_get_object_range()
+    }
+
+    /// Convenience method: list objects with prefix.
+    pub async fn list_objects(
+        &mut self,
+        bucket: &BucketName,
+        prefix: &ObjectKey,
+    ) -> Result<Vec<ObjectSummary>> {
+        self.call(S3Request::ListObjects(bucket.clone(), prefix.clone()))
+            .await?
+            .try_into_list_objects()
+    }
+
+    /// Convenience method: head object metadata.
+    pub async fn head_object(&mut self, bucket: &BucketName, key: &ObjectKey) -> Result<ObjectMetadata> {
+        self.call(S3Request::HeadObject(bucket.clone(), key.clone()))
+            .await?
+            .try_into_head_object()
+    }
+
+    /// Convenience method: put object.
+    pub async fn put_object(&mut self, bucket: &BucketName, key: &ObjectKey, body: &[u8]) -> Result<()> {
+        self.call(S3Request::PutObject(bucket.clone(), key.clone(), body.to_vec()))
+            .await?
+            .try_into_put_object()
+    }
+
+    /// Convenience method: put object if not exists.
+    pub async fn put_object_if_none_match(
+        &mut self,
+        bucket: &BucketName,
+        key: &ObjectKey,
+        body: &[u8],
+    ) -> Result<bool> {
+        self.call(S3Request::PutObjectIfNoneMatch(bucket.clone(), key.clone(), body.to_vec()))
+            .await?
+            .try_into_put_object_if_none_match()
+    }
+
+    /// Convenience method: delete object.
+    pub async fn delete_object(&mut self, bucket: &BucketName, key: &ObjectKey) -> Result<()> {
+        self.call(S3Request::DeleteObject(bucket.clone(), key.clone()))
+            .await?
+            .try_into_delete_object()
+    }
+
+    /// Convenience method: check if object exists.
+    pub async fn object_exists(&mut self, bucket: &BucketName, key: &ObjectKey) -> Result<bool> {
+        self.call(S3Request::ObjectExists(bucket.clone(), key.clone()))
+            .await?
+            .try_into_object_exists()
+    }
 }
 
 impl Service<S3Request> for S3Service {
