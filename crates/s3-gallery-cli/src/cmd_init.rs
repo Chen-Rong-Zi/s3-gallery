@@ -1,8 +1,8 @@
 use crate::cli::Cli;
 use s3_gallery_core::error::{Result, S3GalleryError};
-use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::{HostIdentifier, OssConfig};
 use s3_gallery_core::s3::real::RealS3Client;
+use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::types::{BucketName, ObjectKey};
 use std::sync::Arc;
 
@@ -47,12 +47,12 @@ pub async fn run_init(
         &cli.secret_key,
         10,
     )?;
-    let s3 = Arc::new(RealS3Client::from_config(&config)) as Arc<dyn S3Client>;
+    let mut s3 = S3Service::new(Arc::new(RealS3Client::from_config(&config)));
 
     // Upload to OSS
     let config_key = host.config_path();
     let json_bytes = json.into_bytes();
-    s3.put_object(&bucket, config_key, &json_bytes).await?;
+    s3.put_object(&bucket, &config_key, &json_bytes).await?;
 
     let prefix_str = prefix.unwrap_or("");
     println!("Host initialized:");
