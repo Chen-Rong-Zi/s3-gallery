@@ -3,8 +3,15 @@
 //! TrafficRecord, TrafficCounters, S3Operation, and BusinessS3Client.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
+use async_trait::async_trait;
+use tokio::sync::mpsc;
+
+use crate::error::Result;
+use crate::s3::client::{ObjectMetadata, ObjectSummary, S3Client};
 use crate::s3::s3_service::S3Request;
+use crate::types::{BucketName, ObjectKey};
 
 /// A single traffic record — created by BusinessS3Client on successful S3 operations.
 #[derive(Debug, Clone)]
@@ -96,6 +103,180 @@ impl TrafficCounters {
     }
 }
 
+/// TrafficRecorder — fire-and-forget traffic recording.
+///
+/// Uses a bounded mpsc channel (10,000 capacity) with try_send so that
+/// recording never blocks S3 operations. If the channel is full, records
+/// are silently dropped with a tracing::warn! log.
+pub struct TrafficRecorder {
+    pub counters: Arc<TrafficCounters>,
+    pub tx: mpsc::Sender<TrafficRecord>,
+}
+
+impl TrafficRecorder {
+    /// Create a new TrafficRecorder.
+    pub fn new(_pool: sqlx::SqlitePool) -> Self {
+        let counters = Arc::new(TrafficCounters::new());
+        let (tx, _rx) = mpsc::channel(10_000);
+        Self { counters, tx }
+    }
+
+    /// Record a traffic event. Non-blocking — uses try_send.
+    pub fn record(&self, record: TrafficRecord) {
+        self.counters.record(&record);
+        if let Err(e) = self.tx.try_send(record) {
+            tracing::warn!(
+                target: "s3_gallery::traffic",
+                error = %e,
+                "traffic channel full, dropping record"
+            );
+        }
+    }
+}
+
+/// BusinessS3Client wraps an S3Client and records traffic on success.
+///
+/// Carries a `business` label (e.g. "web_download", "exif_extraction")
+/// and a `host_id` so traffic can be attributed per-business-layer.
+pub struct BusinessS3Client {
+    inner: Arc<dyn S3Client>,
+    recorder: Arc<TrafficRecorder>,
+    host_id: String,
+    business: String,
+}
+
+impl BusinessS3Client {
+    pub fn new(
+        inner: Arc<dyn S3Client>,
+        host_id: &str,
+        business: &str,
+        recorder: Arc<TrafficRecorder>,
+    ) -> Self {
+        Self {
+            inner,
+            recorder,
+            host_id: host_id.to_string(),
+            business: business.to_string(),
+        }
+    }
+
+    fn record_traffic(&self, operation: S3Operation, bytes: u64, file_key: &str) {
+        let direction = match operation {
+            S3Operation::GetObject | S3Operation::GetObjectRange | S3Operation::HeadObject => {
+                "download"
+            }
+            S3Operation::PutObject | S3Operation::PutObjectIfNoneMatch => "upload",
+            S3Operation::ListObjects | S3Operation::DeleteObject | S3Operation::ObjectExists => {
+                "download"
+            }
+        };
+        self.recorder.record(TrafficRecord {
+            host_id: self.host_id.clone(),
+            file_key: file_key.to_string(),
+            business: self.business.clone(),
+            operation,
+            direction: direction.to_string(),
+            bytes,
+            count: 1,
+        });
+    }
+}
+
+#[async_trait]
+impl S3Client for BusinessS3Client {
+    async fn list_objects(
+        &self,
+        bucket: &BucketName,
+        prefix: &ObjectKey,
+    ) -> Result<Vec<ObjectSummary>> {
+        let result = self.inner.list_objects(bucket, prefix).await;
+        if result.is_ok() {
+            self.record_traffic(S3Operation::ListObjects, 0, "");
+        }
+        result
+    }
+
+    async fn head_object(&self, bucket: &BucketName, key: &ObjectKey) -> Result<ObjectMetadata> {
+        let result = self.inner.head_object(bucket, key).await;
+        if let Ok(ref meta) = result {
+            self.record_traffic(S3Operation::HeadObject, meta.size.as_u64(), key.as_str());
+        }
+        result
+    }
+
+    async fn get_object(&self, bucket: &BucketName, key: &ObjectKey) -> Result<Vec<u8>> {
+        let result = self.inner.get_object(bucket, key).await;
+        if let Ok(ref data) = result {
+            self.record_traffic(S3Operation::GetObject, data.len() as u64, key.as_str());
+        }
+        result
+    }
+
+    async fn get_object_range(
+        &self,
+        bucket: &BucketName,
+        key: &ObjectKey,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<u8>> {
+        let result = self.inner.get_object_range(bucket, key, start, end).await;
+        if let Ok(ref data) = result {
+            self.record_traffic(
+                S3Operation::GetObjectRange,
+                data.len() as u64,
+                key.as_str(),
+            );
+        }
+        result
+    }
+
+    async fn put_object(
+        &self,
+        bucket: &BucketName,
+        key: &ObjectKey,
+        body: &[u8],
+    ) -> Result<()> {
+        let result = self.inner.put_object(bucket, key, body).await;
+        if result.is_ok() {
+            self.record_traffic(S3Operation::PutObject, body.len() as u64, key.as_str());
+        }
+        result
+    }
+
+    async fn put_object_if_none_match(
+        &self,
+        bucket: &BucketName,
+        key: &ObjectKey,
+        body: &[u8],
+    ) -> Result<bool> {
+        let result = self.inner.put_object_if_none_match(bucket, key, body).await;
+        if let Ok(true) = result {
+            self.record_traffic(
+                S3Operation::PutObjectIfNoneMatch,
+                body.len() as u64,
+                key.as_str(),
+            );
+        }
+        result
+    }
+
+    async fn delete_object(&self, bucket: &BucketName, key: &ObjectKey) -> Result<()> {
+        let result = self.inner.delete_object(bucket, key).await;
+        if result.is_ok() {
+            self.record_traffic(S3Operation::DeleteObject, 0, key.as_str());
+        }
+        result
+    }
+
+    async fn object_exists(&self, bucket: &BucketName, key: &ObjectKey) -> Result<bool> {
+        let result = self.inner.object_exists(bucket, key).await;
+        if result.is_ok() {
+            self.record_traffic(S3Operation::ObjectExists, 0, key.as_str());
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
@@ -154,6 +335,62 @@ mod tests {
             S3Operation::from_request(&S3Request::DeleteObject(b.clone(), k.clone())),
             S3Operation::DeleteObject
         ));
+        Ok(())
+    }
+
+    use std::sync::Arc;
+
+    use crate::s3::mock::MockS3Client;
+
+    #[tokio::test]
+    async fn test_traffic_recorder_record() {
+        let (tx, mut rx) = mpsc::channel(100);
+        let counters = Arc::new(TrafficCounters::new());
+        let recorder = TrafficRecorder {
+            counters: counters.clone(),
+            tx,
+        };
+
+        let record = TrafficRecord {
+            host_id: "test".into(),
+            file_key: "f.txt".into(),
+            business: "test".into(),
+            operation: S3Operation::GetObject,
+            direction: "download".into(),
+            bytes: 100,
+            count: 1,
+        };
+        recorder.record(record);
+
+        // Should be in counters immediately
+        assert_eq!(counters.download_bytes.load(Ordering::Relaxed), 100);
+        // Should be in channel
+        let received = rx.try_recv().ok();
+        assert!(received.is_some());
+        assert_eq!(received.unwrap().bytes, 100);
+    }
+
+    #[tokio::test]
+    async fn test_business_s3_client_records_traffic() -> crate::error::Result<()> {
+        let (tx, _rx) = mpsc::channel(100);
+        let counters = Arc::new(TrafficCounters::new());
+        let recorder = Arc::new(TrafficRecorder {
+            counters: counters.clone(),
+            tx,
+        });
+        let inner = Arc::new(MockS3Client::with_fixtures(vec![("test.txt", b"hello")])?);
+
+        let client =
+            BusinessS3Client::new(inner.clone(), "h1", "test_biz", recorder);
+        let bucket = BucketName::new("test-bucket")?;
+        let key = ObjectKey::new("test.txt")?;
+
+        // GetObject should record download traffic
+        let data = client.get_object(&bucket, &key).await?;
+        assert_eq!(data, b"hello");
+        assert!(counters.download_bytes.load(Ordering::Relaxed) > 0);
+        assert_eq!(counters.request_count.load(Ordering::Relaxed), 1);
+
         Ok(())
     }
 }
