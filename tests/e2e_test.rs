@@ -7,7 +7,7 @@
 //! - `S3_ENDPOINT` (default: `http://localhost:9000`)
 //! - `AWS_ACCESS_KEY_ID` (default: `minioadmin`)
 //! - `AWS_SECRET_ACCESS_KEY` (default: `minioadmin`)
-//! - `S3_BUCKET` (default: `ossgalley-e2e-test`)
+//! - `S3_BUCKET` (default: `s3-gallery-e2e-test`)
 //! - `S3_REGION` (default: `us-east-1`)
 //!
 //! # Prerequisites
@@ -29,264 +29,19 @@
 
 use std::sync::Arc;
 
-use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
-use aws_sdk_s3::error::ProvideErrorMetadata;
-use aws_sdk_s3::primitives::ByteStream;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
-use ossgalley_core::db::models::FileEntry;
-use ossgalley_core::db::pool::create_pool;
-use ossgalley_core::db::schema::run_migrations;
-use ossgalley_core::error::{OssgalleyError, Result};
-use ossgalley_core::s3::client::S3Client;
-use ossgalley_core::s3::lock::{acquire_lock, check_lock};
-use ossgalley_core::scan::scanner::{run_scan, ScanConfig};
-use ossgalley_core::types::{BucketName, ObjectKey};
-
-// ---------------------------------------------------------------------------
-// E2E S3 client wrapper
-// ---------------------------------------------------------------------------
-
-/// A real S3 client that wraps `aws_sdk_s3::Client` and implements the
-/// `S3Client` trait.
-struct RealS3Client {
-    client: aws_sdk_s3::Client,
-    bucket: BucketName,
-}
-
-impl RealS3Client {
-    /// Build a new client from environment variables.
-    #[allow(deprecated)]
-    async fn from_env() -> Result<Self> {
-        let endpoint = env_or("S3_ENDPOINT", "http://localhost:9000");
-        let access_key = env_or("AWS_ACCESS_KEY_ID", "minioadmin");
-        let secret_key = env_or("AWS_SECRET_ACCESS_KEY", "minioadmin");
-        let region_str = env_or("S3_REGION", "us-east-1");
-        let bucket = BucketName::new(env_or("S3_BUCKET", "ossgalley-e2e-test"))?;
-
-        let creds = Credentials::new(access_key, secret_key, None, None, "e2e-test");
-
-        let config = aws_sdk_s3::Config::builder()
-            .behavior_version(BehaviorVersion::v2025_01_17())
-            .region(Region::new(region_str))
-            .endpoint_url(&endpoint)
-            .credentials_provider(creds)
-            .force_path_style(true)
-            .build();
-
-        let client = aws_sdk_s3::Client::from_conf(config);
-
-        Ok(Self { client, bucket })
-    }
-}
-
-#[async_trait::async_trait]
-impl S3Client for RealS3Client {
-    async fn list_objects(
-        &self,
-        _bucket: &BucketName,
-        prefix: &ObjectKey,
-    ) -> Result<Vec<ossgalley_core::s3::client::ObjectSummary>> {
-        let resp = self
-            .client
-            .list_objects_v2()
-            .bucket(self.bucket.as_str())
-            .prefix(prefix.as_str())
-            .send()
-            .await
-            .map_err(|e| OssgalleyError::S3Error(e.to_string()))?;
-
-        let mut results = Vec::new();
-        if let Some(contents) = resp.contents {
-            for obj in contents {
-                let key = obj.key().unwrap_or_default();
-                if key.is_empty() {
-                    continue;
-                }
-                let etag = obj.e_tag().unwrap_or("unknown").trim_matches('"');
-                results.push(ossgalley_core::s3::client::ObjectSummary {
-                    key: ObjectKey::new(key)
-                        .map_err(|e| OssgalleyError::S3Error(e.to_string()))?,
-                    etag: ossgalley_core::types::Etag::new(etag)
-                        .map_err(|e| OssgalleyError::S3Error(e.to_string()))?,
-                    size: ossgalley_core::types::FileSize::new(obj.size().unwrap_or(0) as u64),
-                    last_modified: obj
-                        .last_modified()
-                        .map(|d| d.to_string())
-                        .unwrap_or_default(),
-                });
-            }
-        }
-        Ok(results)
-    }
-
-    async fn head_object(
-        &self,
-        _bucket: &BucketName,
-        key: &ObjectKey,
-    ) -> Result<ossgalley_core::s3::client::ObjectMetadata> {
-        let resp = self
-            .client
-            .head_object()
-            .bucket(self.bucket.as_str())
-            .key(key.as_str())
-            .send()
-            .await
-            .map_err(|e| OssgalleyError::S3Error(e.to_string()))?;
-
-        let etag = resp.e_tag().unwrap_or("unknown").trim_matches('"');
-        Ok(ossgalley_core::s3::client::ObjectMetadata {
-            etag: ossgalley_core::types::Etag::new(etag)
-                .map_err(|e| OssgalleyError::S3Error(e.to_string()))?,
-            size: ossgalley_core::types::FileSize::new(
-    resp.content_length().unwrap_or(0).max(0) as u64,
-),
-            content_type: resp.content_type().map(|s| s.to_string()),
-            last_modified: resp
-                .last_modified()
-                .map(|d| d.to_string())
-                .unwrap_or_default(),
-        })
-    }
-
-    async fn get_object(
-        &self,
-        _bucket: &BucketName,
-        key: &ObjectKey,
-    ) -> Result<Vec<u8>> {
-        let resp = self
-            .client
-            .get_object()
-            .bucket(self.bucket.as_str())
-            .key(key.as_str())
-            .send()
-            .await
-            .map_err(|e| OssgalleyError::S3Error(e.to_string()))?;
-
-        let data = resp
-            .body
-            .collect()
-            .await
-            .map_err(|e| OssgalleyError::S3Error(e.to_string()))?;
-        Ok(data.to_vec())
-    }
-
-    async fn get_object_range(
-        &self,
-        _bucket: &BucketName,
-        key: &ObjectKey,
-        start: u64,
-        end: u64,
-    ) -> Result<Vec<u8>> {
-        let range = format!("bytes={}-{}", start, end - 1);
-        let resp = self
-            .client
-            .get_object()
-            .bucket(self.bucket.as_str())
-            .key(key.as_str())
-            .range(range)
-            .send()
-            .await
-            .map_err(|e| OssgalleyError::S3Error(e.to_string()))?;
-
-        let data = resp
-            .body
-            .collect()
-            .await
-            .map_err(|e| OssgalleyError::S3Error(e.to_string()))?;
-        Ok(data.to_vec())
-    }
-
-    async fn put_object(
-        &self,
-        _bucket: &BucketName,
-        key: &ObjectKey,
-        body: &[u8],
-    ) -> Result<()> {
-        self.client
-            .put_object()
-            .bucket(self.bucket.as_str())
-            .key(key.as_str())
-            .body(ByteStream::from(body.to_vec()))
-            .send()
-            .await
-            .map_err(|e| OssgalleyError::S3Error(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn put_object_if_none_match(
-        &self,
-        _bucket: &BucketName,
-        key: &ObjectKey,
-        body: &[u8],
-    ) -> Result<bool> {
-        let result = self
-            .client
-            .put_object()
-            .bucket(self.bucket.as_str())
-            .key(key.as_str())
-            .body(ByteStream::from(body.to_vec()))
-            .if_none_match("*")
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(true),
-            Err(err) => {
-                // PreconditionFailed (412) means the object already exists.
-                if let Some(service_err) = err.as_service_error() {
-                    if service_err.code() == Some("PreconditionFailed") {
-                        return Ok(false);
-                    }
-                }
-                Err(OssgalleyError::S3Error(err.to_string()))
-            }
-        }
-    }
-
-    async fn delete_object(
-        &self,
-        _bucket: &BucketName,
-        key: &ObjectKey,
-    ) -> Result<()> {
-        self.client
-            .delete_object()
-            .bucket(self.bucket.as_str())
-            .key(key.as_str())
-            .send()
-            .await
-            .map_err(|e| OssgalleyError::S3Error(e.to_string()))?;
-        Ok(())
-    }
-
-    async fn object_exists(
-        &self,
-        _bucket: &BucketName,
-        key: &ObjectKey,
-    ) -> Result<bool> {
-        let result = self
-            .client
-            .head_object()
-            .bucket(self.bucket.as_str())
-            .key(key.as_str())
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(true),
-            Err(err) => {
-                // Check if the error is "Not Found" (404) via the service error code.
-                if let Some(service_err) = err.as_service_error() {
-                    if service_err.code() == Some("NotFound") {
-                        return Ok(false);
-                    }
-                }
-                Err(OssgalleyError::S3Error(err.to_string()))
-            }
-        }
-    }
-}
+use s3_gallery_core::db::models::FileEntry;
+use s3_gallery_core::db::pool::create_pool;
+use s3_gallery_core::db::schema::run_migrations;
+use s3_gallery_core::error::{Result, S3GalleryError};
+use s3_gallery_core::s3::client::S3Client;
+use s3_gallery_core::s3::config::OssConfig;
+use s3_gallery_core::s3::lock::{acquire_lock, check_lock};
+use s3_gallery_core::s3::real::RealS3Client;
+use s3_gallery_core::scan::scanner::{run_scan, ScanConfig};
+use s3_gallery_core::types::{BucketName, ObjectKey};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -299,8 +54,7 @@ fn env_or(key: &str, default: &str) -> String {
 
 /// Set up a temporary database with migrations.
 async fn setup_e2e_db() -> Result<(SqlitePool, TempDir)> {
-    let dir = tempfile::tempdir()
-        .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+    let dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     let db_path = dir.path().join("e2e-test.db");
     let pool = create_pool(&db_path).await?;
     run_migrations(&pool).await?;
@@ -317,11 +71,7 @@ async fn ensure_bucket(client: &aws_sdk_s3::Client, bucket_name: &str) -> Result
 
     // If head_bucket fails, try to create it.  BucketAlreadyExists / BucketAlreadyOwnedByYou
     // are treated as success (race with another test run).
-    let create_result = client
-        .create_bucket()
-        .bucket(bucket_name)
-        .send()
-        .await;
+    let create_result = client.create_bucket().bucket(bucket_name).send().await;
     match create_result {
         Ok(_) => Ok(()),
         Err(e) => {
@@ -330,7 +80,9 @@ async fn ensure_bucket(client: &aws_sdk_s3::Client, bucket_name: &str) -> Result
             if msg.contains("BucketAlreadyExists") || msg.contains("BucketAlreadyOwnedByYou") {
                 return Ok(());
             }
-            Err(OssgalleyError::S3Error(format!("Failed to create bucket: {msg}")))
+            Err(S3GalleryError::S3Error(format!(
+                "Failed to create bucket: {msg}"
+            )))
         }
     }
 }
@@ -342,11 +94,19 @@ async fn ensure_bucket(client: &aws_sdk_s3::Client, bucket_name: &str) -> Result
 #[ignore]
 #[tokio::test]
 async fn e2e_s3_put_and_get_object() -> Result<()> {
-    let real = RealS3Client::from_env().await?;
+    let config = OssConfig::validate(
+        BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?,
+        &env_or("S3_ENDPOINT", "http://localhost:9000"),
+        &env_or("S3_REGION", "us-east-1"),
+        &env_or("AWS_ACCESS_KEY_ID", "minioadmin"),
+        &env_or("AWS_SECRET_ACCESS_KEY", "minioadmin"),
+        4,
+    )?;
+    let real = RealS3Client::from_config(&config);
     ensure_bucket(&real.client, real.bucket.as_str()).await?;
 
     let s3 = Arc::new(real) as Arc<dyn S3Client>;
-    let bucket = BucketName::new(env_or("S3_BUCKET", "ossgalley-e2e-test"))?;
+    let bucket = BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?;
     let key = ObjectKey::new(format!("e2e-put-get-{}.txt", uuid::Uuid::new_v4()))?;
     let body = b"Hello from E2E test!";
 
@@ -361,11 +121,19 @@ async fn e2e_s3_put_and_get_object() -> Result<()> {
 #[ignore]
 #[tokio::test]
 async fn e2e_s3_list_objects() -> Result<()> {
-    let real = RealS3Client::from_env().await?;
+    let config = OssConfig::validate(
+        BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?,
+        &env_or("S3_ENDPOINT", "http://localhost:9000"),
+        &env_or("S3_REGION", "us-east-1"),
+        &env_or("AWS_ACCESS_KEY_ID", "minioadmin"),
+        &env_or("AWS_SECRET_ACCESS_KEY", "minioadmin"),
+        4,
+    )?;
+    let real = RealS3Client::from_config(&config);
     ensure_bucket(&real.client, real.bucket.as_str()).await?;
 
     let s3 = Arc::new(real) as Arc<dyn S3Client>;
-    let bucket = BucketName::new(env_or("S3_BUCKET", "ossgalley-e2e-test"))?;
+    let bucket = BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?;
 
     let prefix = format!("e2e-list-{}/", uuid::Uuid::new_v4());
     let key1 = ObjectKey::new(format!("{prefix}file-a.txt"))?;
@@ -386,11 +154,19 @@ async fn e2e_s3_list_objects() -> Result<()> {
 #[ignore]
 #[tokio::test]
 async fn e2e_s3_head_object() -> Result<()> {
-    let real = RealS3Client::from_env().await?;
+    let config = OssConfig::validate(
+        BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?,
+        &env_or("S3_ENDPOINT", "http://localhost:9000"),
+        &env_or("S3_REGION", "us-east-1"),
+        &env_or("AWS_ACCESS_KEY_ID", "minioadmin"),
+        &env_or("AWS_SECRET_ACCESS_KEY", "minioadmin"),
+        4,
+    )?;
+    let real = RealS3Client::from_config(&config);
     ensure_bucket(&real.client, real.bucket.as_str()).await?;
 
     let s3 = Arc::new(real) as Arc<dyn S3Client>;
-    let bucket = BucketName::new(env_or("S3_BUCKET", "ossgalley-e2e-test"))?;
+    let bucket = BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?;
 
     let key = ObjectKey::new(format!("e2e-head-{}.txt", uuid::Uuid::new_v4()))?;
     s3.put_object(&bucket, &key, b"test data").await?;
@@ -406,11 +182,19 @@ async fn e2e_s3_head_object() -> Result<()> {
 #[ignore]
 #[tokio::test]
 async fn e2e_s3_object_exists() -> Result<()> {
-    let real = RealS3Client::from_env().await?;
+    let config = OssConfig::validate(
+        BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?,
+        &env_or("S3_ENDPOINT", "http://localhost:9000"),
+        &env_or("S3_REGION", "us-east-1"),
+        &env_or("AWS_ACCESS_KEY_ID", "minioadmin"),
+        &env_or("AWS_SECRET_ACCESS_KEY", "minioadmin"),
+        4,
+    )?;
+    let real = RealS3Client::from_config(&config);
     ensure_bucket(&real.client, real.bucket.as_str()).await?;
 
     let s3 = Arc::new(real) as Arc<dyn S3Client>;
-    let bucket = BucketName::new(env_or("S3_BUCKET", "ossgalley-e2e-test"))?;
+    let bucket = BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?;
 
     let key = ObjectKey::new(format!("e2e-exists-{}.txt", uuid::Uuid::new_v4()))?;
 
@@ -427,11 +211,19 @@ async fn e2e_s3_object_exists() -> Result<()> {
 #[ignore]
 #[tokio::test]
 async fn e2e_s3_get_object_range() -> Result<()> {
-    let real = RealS3Client::from_env().await?;
+    let config = OssConfig::validate(
+        BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?,
+        &env_or("S3_ENDPOINT", "http://localhost:9000"),
+        &env_or("S3_REGION", "us-east-1"),
+        &env_or("AWS_ACCESS_KEY_ID", "minioadmin"),
+        &env_or("AWS_SECRET_ACCESS_KEY", "minioadmin"),
+        4,
+    )?;
+    let real = RealS3Client::from_config(&config);
     ensure_bucket(&real.client, real.bucket.as_str()).await?;
 
     let s3 = Arc::new(real) as Arc<dyn S3Client>;
-    let bucket = BucketName::new(env_or("S3_BUCKET", "ossgalley-e2e-test"))?;
+    let bucket = BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?;
 
     let key = ObjectKey::new(format!("e2e-range-{}.txt", uuid::Uuid::new_v4()))?;
     let body = b"Hello, World!";
@@ -447,11 +239,19 @@ async fn e2e_s3_get_object_range() -> Result<()> {
 #[ignore]
 #[tokio::test]
 async fn e2e_s3_put_if_none_match() -> Result<()> {
-    let real = RealS3Client::from_env().await?;
+    let config = OssConfig::validate(
+        BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?,
+        &env_or("S3_ENDPOINT", "http://localhost:9000"),
+        &env_or("S3_REGION", "us-east-1"),
+        &env_or("AWS_ACCESS_KEY_ID", "minioadmin"),
+        &env_or("AWS_SECRET_ACCESS_KEY", "minioadmin"),
+        4,
+    )?;
+    let real = RealS3Client::from_config(&config);
     ensure_bucket(&real.client, real.bucket.as_str()).await?;
 
     let s3 = Arc::new(real) as Arc<dyn S3Client>;
-    let bucket = BucketName::new(env_or("S3_BUCKET", "ossgalley-e2e-test"))?;
+    let bucket = BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?;
 
     let key = ObjectKey::new(format!("e2e-if-none-match-{}.txt", uuid::Uuid::new_v4()))?;
 
@@ -472,11 +272,19 @@ async fn e2e_s3_put_if_none_match() -> Result<()> {
 #[ignore]
 #[tokio::test]
 async fn e2e_scan_real_bucket() -> Result<()> {
-    let real = RealS3Client::from_env().await?;
+    let config = OssConfig::validate(
+        BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?,
+        &env_or("S3_ENDPOINT", "http://localhost:9000"),
+        &env_or("S3_REGION", "us-east-1"),
+        &env_or("AWS_ACCESS_KEY_ID", "minioadmin"),
+        &env_or("AWS_SECRET_ACCESS_KEY", "minioadmin"),
+        4,
+    )?;
+    let real = RealS3Client::from_config(&config);
     ensure_bucket(&real.client, real.bucket.as_str()).await?;
 
     let s3 = Arc::new(real) as Arc<dyn S3Client>;
-    let bucket = BucketName::new(env_or("S3_BUCKET", "ossgalley-e2e-test"))?;
+    let bucket = BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?;
     let (pool, _dir) = setup_e2e_db().await?;
 
     // Use prefix WITHOUT trailing slash to avoid double-slash in lock key
@@ -485,6 +293,7 @@ async fn e2e_scan_real_bucket() -> Result<()> {
     s3.put_object(&bucket, &key, b"fake image data").await?;
 
     let scan_config = ScanConfig {
+        host_id: "e2e-test-host".to_string(),
         s3: s3.clone(),
         db: pool.clone(),
         bucket: bucket.clone(),
@@ -499,7 +308,7 @@ async fn e2e_scan_real_bucket() -> Result<()> {
     assert_eq!(result.total_files, 1, "should find the test object");
     assert_eq!(result.new_files, 1);
 
-    let entry = FileEntry::get_by_key(&pool, key.as_str()).await?;
+    let entry = FileEntry::get_by_key(&pool, "e2e-test-host", key.as_str()).await?;
     assert_eq!(entry.file_type, "jpeg");
     assert!(!entry.is_deleted);
 
@@ -510,14 +319,22 @@ async fn e2e_scan_real_bucket() -> Result<()> {
 #[ignore]
 #[tokio::test]
 async fn e2e_lock_and_release() -> Result<()> {
-    let real = RealS3Client::from_env().await?;
+    let config = OssConfig::validate(
+        BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?,
+        &env_or("S3_ENDPOINT", "http://localhost:9000"),
+        &env_or("S3_REGION", "us-east-1"),
+        &env_or("AWS_ACCESS_KEY_ID", "minioadmin"),
+        &env_or("AWS_SECRET_ACCESS_KEY", "minioadmin"),
+        4,
+    )?;
+    let real = RealS3Client::from_config(&config);
     ensure_bucket(&real.client, real.bucket.as_str()).await?;
 
     let s3 = Arc::new(real) as Arc<dyn S3Client>;
-    let bucket = BucketName::new(env_or("S3_BUCKET", "ossgalley-e2e-test"))?;
+    let bucket = BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?;
 
     let lock_key = ObjectKey::new(format!(
-        "e2e-lock-{}/.ossgallery/db.lock",
+        "e2e-lock-{}/.s3-gallery/db.lock",
         uuid::Uuid::new_v4()
     ))?;
 

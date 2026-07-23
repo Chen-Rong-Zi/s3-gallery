@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
   workflow_dispatch:
     inputs:
       s3_endpoint:
@@ -15,12 +15,12 @@ on:
       access_key:
         description: "S3 access key"
         required: true
-        default: "minioadmin"
+        default: "s3oss"
         type: string
       secret_key:
         description: "S3 secret key"
         required: true
-        default: "minioadmin"
+        default: "s3oss1234"
         type: string
 
 env:
@@ -108,7 +108,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ossgalley-${{ matrix.os }}
+          name: s3-gallery-${{ matrix.os }}
           path: target/release/
           if-no-files-found: warn
 
@@ -121,6 +121,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
       - name: Cache cargo dependencies
         uses: actions/cache@v4
@@ -131,16 +133,31 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
 
       - name: Generate coverage report
-        run: cargo tarpaulin --out Xml
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+
+      - name: Check coverage threshold
+        run: |
+          cargo llvm-cov --workspace --json > /tmp/cov.json
+          python3 -c "
+          import json, sys
+          d = json.load(open('/tmp/cov.json'))
+          pct = d['data'][0]['totals']['lines']['percent']
+          print(f'Coverage: {pct:.2f}%')
+          if pct < 50.0:
+              print(f'Coverage {pct:.2f}% is below 50% threshold')
+              sys.exit(1)
+          else:
+              print(f'Coverage {pct:.2f}% meets 50% threshold')
+          "
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v5
         with:
-          files: cobertura.xml
+          files: lcov.info
           fail_ci_if_error: false
 
   e2e:
@@ -163,34 +180,9 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Start MinIO
-        run: |
-          docker compose -f docker-compose.yml up -d minio
-          echo "Waiting for MinIO to be ready..."
-          for i in $(seq 1 30); do
-            if curl -s http://localhost:9000/minio/health/live > /dev/null 2>&1; then
-              echo "MinIO is ready"
-              break
-            fi
-            sleep 2
-          done
-
-      - name: Run seed script
-        run: |
-          chmod +x ./scripts/seed.sh 2>/dev/null || true
-          ./scripts/seed.sh 2>/dev/null || echo "No seed script found, skipping"
-        env:
-          S3_ENDPOINT: ${{ inputs.s3_endpoint || 'http://localhost:9000' }}
-          AWS_ACCESS_KEY_ID: ${{ inputs.access_key || 'minioadmin' }}
-          AWS_SECRET_ACCESS_KEY: ${{ inputs.secret_key || 'minioadmin' }}
-
       - name: Run E2E tests
-        run: cargo test --workspace --ignored
+        run: cargo test --test e2e_test -- --ignored --test-threads=1
         env:
-          S3_ENDPOINT: ${{ inputs.s3_endpoint || 'http://localhost:9000' }}
-          AWS_ACCESS_KEY_ID: ${{ inputs.access_key || 'minioadmin' }}
-          AWS_SECRET_ACCESS_KEY: ${{ inputs.secret_key || 'minioadmin' }}
-
-      - name: Stop MinIO
-        if: always()
-        run: docker compose -f docker-compose.yml down
+          S3_ENDPOINT: ${{ inputs.s3_endpoint }}
+          AWS_ACCESS_KEY_ID: ${{ inputs.access_key }}
+          AWS_SECRET_ACCESS_KEY: ${{ inputs.secret_key }}

@@ -5,17 +5,17 @@
 
 use std::sync::Arc;
 
-use ossgalley_core::error::Result;
-use ossgalley_core::s3::client::S3Client;
-use ossgalley_core::s3::lock::{acquire_lock, check_lock};
-use ossgalley_core::s3::mock::MockS3Client;
-use ossgalley_core::types::{BucketName, ObjectKey};
+use s3_gallery_core::error::Result;
+use s3_gallery_core::s3::client::S3Client;
+use s3_gallery_core::s3::lock::{acquire_lock, check_lock};
+use s3_gallery_core::s3::mock::MockS3Client;
+use s3_gallery_core::types::{BucketName, ObjectKey};
 
 mod common;
 
 /// Helper to create a test lock key.
 fn lock_key() -> ObjectKey {
-    ObjectKey::new("test-host/.ossgallery/db.lock").expect("valid lock key")
+    ObjectKey::new("test-host/.s3-gallery/db.lock").expect("valid lock key")
 }
 
 #[tokio::test]
@@ -25,7 +25,13 @@ async fn test_lock_acquire_and_release() -> Result<()> {
     let key = lock_key();
 
     // Acquire
-    let guard = acquire_lock(s3.clone(), bucket.clone(), key.clone(), "client-1".to_string()).await?;
+    let guard = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key.clone(),
+        "client-1".to_string(),
+    )
+    .await?;
 
     // Lock should exist
     assert!(check_lock(s3.as_ref(), &bucket, &key).await?);
@@ -45,10 +51,22 @@ async fn test_lock_contention_is_prevented() -> Result<()> {
     let key = lock_key();
 
     // First client acquires the lock.
-    let _guard1 = acquire_lock(s3.clone(), bucket.clone(), key.clone(), "client-1".to_string()).await?;
+    let _guard1 = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key.clone(),
+        "client-1".to_string(),
+    )
+    .await?;
 
     // Second client should fail with LockContention.
-    let result = acquire_lock(s3.clone(), bucket.clone(), key.clone(), "client-2".to_string()).await;
+    let result = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key.clone(),
+        "client-2".to_string(),
+    )
+    .await;
     assert!(result.is_err(), "second acquisition should fail");
 
     match result {
@@ -70,7 +88,13 @@ async fn test_lock_renewal() -> Result<()> {
     let bucket = common::test_bucket()?;
     let key = lock_key();
 
-    let mut guard = acquire_lock(s3.clone(), bucket.clone(), key.clone(), "client-1".to_string()).await?;
+    let mut guard = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key.clone(),
+        "client-1".to_string(),
+    )
+    .await?;
     guard.renew().await?;
     guard.release().await?;
     Ok(())
@@ -83,11 +107,23 @@ async fn test_lock_acquire_after_release() -> Result<()> {
     let key = lock_key();
 
     // Acquire and release by client 1.
-    let guard = acquire_lock(s3.clone(), bucket.clone(), key.clone(), "client-1".to_string()).await?;
+    let guard = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key.clone(),
+        "client-1".to_string(),
+    )
+    .await?;
     guard.release().await?;
 
     // Acquire by client 2 should succeed.
-    let guard2 = acquire_lock(s3.clone(), bucket.clone(), key.clone(), "client-2".to_string()).await?;
+    let guard2 = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key.clone(),
+        "client-2".to_string(),
+    )
+    .await?;
     guard2.release().await?;
     Ok(())
 }
@@ -101,7 +137,13 @@ async fn test_lock_guard_must_be_consumed() -> Result<()> {
     let bucket = common::test_bucket()?;
     let key = lock_key();
 
-    let guard = acquire_lock(s3.clone(), bucket.clone(), key.clone(), "client-1".to_string()).await?;
+    let guard = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key.clone(),
+        "client-1".to_string(),
+    )
+    .await?;
     guard.release().await?;
 
     // After release, the lock should be gone.
@@ -115,13 +157,25 @@ async fn test_lock_release_consumes_guard() -> Result<()> {
     let bucket = common::test_bucket()?;
     let key = lock_key();
 
-    let guard = acquire_lock(s3.clone(), bucket.clone(), key.clone(), "client-1".to_string()).await?;
+    let guard = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key.clone(),
+        "client-1".to_string(),
+    )
+    .await?;
 
     // guard.release() consumes self, so we can't use guard after this line.
     guard.release().await?;
 
     // Verify we can acquire again (lock was released).
-    let guard2 = acquire_lock(s3.clone(), bucket.clone(), key.clone(), "client-2".to_string()).await?;
+    let guard2 = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key.clone(),
+        "client-2".to_string(),
+    )
+    .await?;
     guard2.release().await?;
     Ok(())
 }
@@ -130,12 +184,24 @@ async fn test_lock_release_consumes_guard() -> Result<()> {
 async fn test_lock_with_different_keys_are_independent() -> Result<()> {
     let s3 = Arc::new(MockS3Client::new()) as Arc<dyn S3Client>;
     let bucket = common::test_bucket()?;
-    let key1 = ObjectKey::new("host-a/.ossgallery/db.lock")?;
-    let key2 = ObjectKey::new("host-b/.ossgallery/db.lock")?;
+    let key1 = ObjectKey::new("host-a/.s3-gallery/db.lock")?;
+    let key2 = ObjectKey::new("host-b/.s3-gallery/db.lock")?;
 
     // Acquire locks on different keys concurrently.
-    let _guard_a = acquire_lock(s3.clone(), bucket.clone(), key1.clone(), "client-a".to_string()).await?;
-    let _guard_b = acquire_lock(s3.clone(), bucket.clone(), key2.clone(), "client-b".to_string()).await?;
+    let _guard_a = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key1.clone(),
+        "client-a".to_string(),
+    )
+    .await?;
+    let _guard_b = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key2.clone(),
+        "client-b".to_string(),
+    )
+    .await?;
 
     // Both locks should exist.
     assert!(check_lock(s3.as_ref(), &bucket, &key1).await?);
@@ -152,7 +218,13 @@ async fn test_lock_multiple_renewals() -> Result<()> {
     let bucket = common::test_bucket()?;
     let key = lock_key();
 
-    let mut guard = acquire_lock(s3.clone(), bucket.clone(), key.clone(), "client-1".to_string()).await?;
+    let mut guard = acquire_lock(
+        s3.clone(),
+        bucket.clone(),
+        key.clone(),
+        "client-1".to_string(),
+    )
+    .await?;
 
     // Renew multiple times.
     guard.renew().await?;
@@ -183,14 +255,26 @@ async fn test_acquire_lock_with_different_bucket() -> Result<()> {
     let s3 = Arc::new(MockS3Client::new()) as Arc<dyn S3Client>;
     let bucket_a = BucketName::new("bucket-a")?;
     let bucket_b = BucketName::new("bucket-b")?;
-    let key_a = ObjectKey::new("host-a/.ossgallery/db.lock")?;
-    let key_b = ObjectKey::new("host-b/.ossgallery/db.lock")?;
+    let key_a = ObjectKey::new("host-a/.s3-gallery/db.lock")?;
+    let key_b = ObjectKey::new("host-b/.s3-gallery/db.lock")?;
 
     // Locks on different buckets are independent in production.
     // The MockS3Client ignores the bucket parameter, so we use different keys
     // to simulate the same behavior.
-    let _guard_a = acquire_lock(s3.clone(), bucket_a.clone(), key_a.clone(), "client-a".to_string()).await?;
-    let _guard_b = acquire_lock(s3.clone(), bucket_b.clone(), key_b.clone(), "client-b".to_string()).await?;
+    let _guard_a = acquire_lock(
+        s3.clone(),
+        bucket_a.clone(),
+        key_a.clone(),
+        "client-a".to_string(),
+    )
+    .await?;
+    let _guard_b = acquire_lock(
+        s3.clone(),
+        bucket_b.clone(),
+        key_b.clone(),
+        "client-b".to_string(),
+    )
+    .await?;
 
     assert!(check_lock(s3.as_ref(), &bucket_a, &key_a).await?);
     assert!(check_lock(s3.as_ref(), &bucket_b, &key_b).await?);

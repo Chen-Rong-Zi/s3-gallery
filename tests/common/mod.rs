@@ -9,16 +9,16 @@
 
 use std::sync::Arc;
 
-use ossgalley_core::db::models::{
-    FileEntry, MetadataEntry, TagEntry, FileTagEntry, ThumbnailEntry,
+use s3_gallery_core::db::models::{
+    FileEntry, FileTagEntry, MetadataEntry, TagEntry, ThumbnailEntry,
 };
-use ossgalley_core::db::pool::create_pool;
-use ossgalley_core::db::schema::run_migrations;
-use ossgalley_core::error::{OssgalleyError, Result};
-use ossgalley_core::s3::client::S3Client;
-use ossgalley_core::s3::config::OssConfig;
-use ossgalley_core::s3::mock::MockS3Client;
-use ossgalley_core::types::BucketName;
+use s3_gallery_core::db::pool::create_pool;
+use s3_gallery_core::db::schema::run_migrations;
+use s3_gallery_core::error::{Result, S3GalleryError};
+use s3_gallery_core::s3::client::S3Client;
+use s3_gallery_core::s3::config::OssConfig;
+use s3_gallery_core::s3::mock::MockS3Client;
+use s3_gallery_core::types::BucketName;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
@@ -26,8 +26,7 @@ use tempfile::TempDir;
 /// along with the temp directory handle (kept alive for the lifetime of the
 /// returned `TempDir`).
 pub async fn setup_test_db() -> Result<(SqlitePool, TempDir)> {
-    let dir = tempfile::tempdir()
-        .map_err(|e| OssgalleyError::DbError(e.to_string()))?;
+    let dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     let db_path = dir.path().join("test.db");
     let pool = create_pool(&db_path).await?;
     run_migrations(&pool).await?;
@@ -40,6 +39,7 @@ pub async fn setup_test_db() -> Result<(SqlitePool, TempDir)> {
 pub async fn seed_test_files(pool: &SqlitePool) -> Result<usize> {
     let files = vec![
         FileEntry {
+            host_id: "test-host".to_string(),
             key: "photos/vacation/img001.jpg".to_string(),
             etag: "etag-001".to_string(),
             size: 102400,
@@ -47,9 +47,11 @@ pub async fn seed_test_files(pool: &SqlitePool) -> Result<usize> {
             content_type: Some("image/jpeg".to_string()),
             file_type: "jpeg".to_string(),
             metadata_state: "extracted".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
         FileEntry {
+            host_id: "test-host".to_string(),
             key: "photos/vacation/img002.jpg".to_string(),
             etag: "etag-002".to_string(),
             size: 204800,
@@ -57,9 +59,11 @@ pub async fn seed_test_files(pool: &SqlitePool) -> Result<usize> {
             content_type: Some("image/jpeg".to_string()),
             file_type: "jpeg".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
         FileEntry {
+            host_id: "test-host".to_string(),
             key: "photos/party/clip001.mp4".to_string(),
             etag: "etag-003".to_string(),
             size: 5242880,
@@ -67,9 +71,11 @@ pub async fn seed_test_files(pool: &SqlitePool) -> Result<usize> {
             content_type: Some("video/mp4".to_string()),
             file_type: "mp4".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
         FileEntry {
+            host_id: "test-host".to_string(),
             key: "docs/report.pdf".to_string(),
             etag: "etag-004".to_string(),
             size: 307200,
@@ -77,9 +83,11 @@ pub async fn seed_test_files(pool: &SqlitePool) -> Result<usize> {
             content_type: Some("application/pdf".to_string()),
             file_type: "pdf".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
         FileEntry {
+            host_id: "test-host".to_string(),
             key: "docs/notes.txt".to_string(),
             etag: "etag-005".to_string(),
             size: 5120,
@@ -87,6 +95,7 @@ pub async fn seed_test_files(pool: &SqlitePool) -> Result<usize> {
             content_type: Some("text/plain".to_string()),
             file_type: "txt".to_string(),
             metadata_state: "pending".to_string(),
+            effective_date: "".to_string(),
             is_deleted: false,
         },
     ];
@@ -169,9 +178,9 @@ pub fn create_mock_s3() -> Result<MockS3Client> {
     MockS3Client::with_fixtures(vec![
         ("photos/vacation/img001.jpg", b"fake jpeg data for img001"),
         ("photos/vacation/img002.jpg", b"fake jpeg data for img002"),
-        ("photos/party/clip001.mp4",  b"fake mp4 data for clip001"),
-        ("docs/report.pdf",           b"fake pdf content"),
-        ("docs/notes.txt",            b"some text notes"),
+        ("photos/party/clip001.mp4", b"fake mp4 data for clip001"),
+        ("docs/report.pdf", b"fake pdf content"),
+        ("docs/notes.txt", b"some text notes"),
     ])
 }
 
