@@ -192,6 +192,52 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     )
     .await?;
 
+    // -- Traffic tracking tables --------------------------------------------
+
+    execute_query(
+        pool,
+        "CREATE TABLE IF NOT EXISTS traffic_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            host_id TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            business TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            bytes INTEGER NOT NULL,
+            count INTEGER NOT NULL,
+            recorded_at TEXT NOT NULL
+        );",
+    )
+    .await?;
+
+    execute_query(
+        pool,
+        "CREATE TABLE IF NOT EXISTS traffic_file_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            host_id TEXT NOT NULL,
+            file_key TEXT NOT NULL,
+            business TEXT NOT NULL,
+            bytes INTEGER NOT NULL,
+            count INTEGER NOT NULL,
+            recorded_at TEXT NOT NULL
+        );",
+    )
+    .await?;
+
+    execute_query(
+        pool,
+        "CREATE TABLE IF NOT EXISTS traffic_stats (
+            host_id TEXT NOT NULL,
+            period TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            business TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            total_bytes INTEGER NOT NULL,
+            total_count INTEGER NOT NULL,
+            PRIMARY KEY (host_id, period, operation, business, direction)
+        );",
+    )
+    .await?;
+
     // -- Indexes ----------------------------------------------------------
 
     execute_query(
@@ -239,6 +285,32 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
     execute_query(
         pool,
         "CREATE INDEX IF NOT EXISTS idx_thumbnails_cached_at ON thumbnails(cached_at);",
+    )
+    .await?;
+
+    // -- Traffic indexes ----------------------------------------------------
+
+    execute_query(
+        pool,
+        "CREATE INDEX IF NOT EXISTS idx_traffic_log_host_time ON traffic_log(host_id, recorded_at);",
+    )
+    .await?;
+
+    execute_query(
+        pool,
+        "CREATE INDEX IF NOT EXISTS idx_traffic_log_business ON traffic_log(business, recorded_at);",
+    )
+    .await?;
+
+    execute_query(
+        pool,
+        "CREATE INDEX IF NOT EXISTS idx_traffic_file_host_key ON traffic_file_log(host_id, file_key);",
+    )
+    .await?;
+
+    execute_query(
+        pool,
+        "CREATE INDEX IF NOT EXISTS idx_traffic_file_time ON traffic_file_log(recorded_at);",
     )
     .await?;
 
@@ -294,6 +366,9 @@ mod tests {
             "scan_metadata",
             "tags",
             "thumbnails",
+            "traffic_file_log",
+            "traffic_log",
+            "traffic_stats",
         ];
 
         for name in &expected_tables {
@@ -358,6 +433,10 @@ mod tests {
             "idx_metadata_namespace",
             "idx_tags_tag_type",
             "idx_thumbnails_cached_at",
+            "idx_traffic_file_host_key",
+            "idx_traffic_file_time",
+            "idx_traffic_log_business",
+            "idx_traffic_log_host_time",
         ];
 
         for name in &expected_indexes {
