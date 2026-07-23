@@ -73,6 +73,9 @@ async fn test_schema_migration_creates_all_tables() -> Result<()> {
         "scan_metadata",
         "tags",
         "thumbnails",
+        "traffic_file_log",
+        "traffic_log",
+        "traffic_stats",
     ];
 
     for name in &expected {
