@@ -48,6 +48,7 @@ impl Layer<S3Service> for DiscoverLayer {
 ///
 /// This is the innermost pipeline layer. It directly uses S3Service convenience
 /// methods for S3 operations (list_objects, get_object).
+#[derive(Clone)]
 pub struct DiscoverService {
     s3: S3Service,
     db: SqlitePool,

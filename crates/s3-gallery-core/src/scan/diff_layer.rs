@@ -49,6 +49,7 @@ where
 }
 
 /// DiffService -- calls inner, then diffs scan_objects against files table.
+#[derive(Clone)]
 pub struct DiffService<I> {
     inner: I,
     db: SqlitePool,

@@ -51,6 +51,7 @@ where
 }
 
 /// ProcessService — calls inner, then extracts metadata for pending files.
+#[derive(Clone)]
 pub struct ProcessService<I> {
     inner: I,
     db: sqlx::SqlitePool,

@@ -1,24 +1,23 @@
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use tower::ServiceBuilder;
 
 use crate::cli::Cli;
-use s3_gallery_core::db::models::HostConfigEntry;
 use s3_gallery_core::db::pool::create_pool;
 use s3_gallery_core::db::schema::run_migrations;
 use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
-use s3_gallery_core::s3::config::HostIdentifier;
 use s3_gallery_core::s3::config::OssConfig;
 use s3_gallery_core::s3::layers::{LogLayer, TrafficLayer};
 use s3_gallery_core::s3::real::RealS3Client;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::s3::traffic_persist::spawn_aggregator;
 use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
-use s3_gallery_core::scan::scanner::run_scan as core_run_scan;
-use s3_gallery_core::scan::scanner::ScanConfig;
-use s3_gallery_core::scan::scanner::ScanResult;
+use s3_gallery_core::scan::aggregate::AggregateLayer;
+use s3_gallery_core::scan::diff_layer::DiffLayer;
+use s3_gallery_core::scan::discover::DiscoverLayer;
+use s3_gallery_core::scan::pipeline::ScanRequest;
+use s3_gallery_core::scan::process::ProcessLayer;
 use s3_gallery_core::types::{BucketName, ObjectKey};
 use sqlx::SqlitePool;
 
@@ -77,10 +76,10 @@ pub async fn run_init(
         std::fs::remove_file(&cli.db_path)?;
     }
 
-    let (bucket, s3, bucket_str) = setup_scan_common(cli).await?;
+    let (bucket, s3, _bucket_str) = setup_scan_common(cli).await?;
     let pool = setup_db_pool(cli).await?;
 
-    run_scan_core(&s3, &pool, &bucket, &bucket_str, prefix, &opts, cli).await
+    run_scan_core(s3.clone(), &pool, &bucket, &prefix.unwrap_or_default(), &opts, cli).await
 }
 
 pub async fn run_update(cli: &Cli, prefix: Option<String>, opts: ScanOptions) -> Result<()> {
@@ -92,14 +91,15 @@ pub async fn run_update(cli: &Cli, prefix: Option<String>, opts: ScanOptions) ->
         )));
     }
 
-    let (bucket, s3, bucket_str) = setup_scan_common(cli).await?;
+    let (bucket, s3, _bucket_str) = setup_scan_common(cli).await?;
     let pool = setup_db_pool(cli).await?;
 
-    run_scan_core(&s3, &pool, &bucket, &bucket_str, prefix, &opts, cli).await
+    run_scan_core(s3.clone(), &pool, &bucket, &prefix.unwrap_or_default(), &opts, cli).await
 }
 
 pub async fn run_sync(cli: &Cli, prefix: Option<String>, opts: ScanOptions) -> Result<()> {
-    let (bucket, s3, bucket_str) = setup_scan_common(cli).await?;
+    let (bucket, s3, _bucket_str) = setup_scan_common(cli).await?;
+    let scope_prefix = prefix.unwrap_or_default();
 
     // Pull remote DB from OSS
     let db_key = ObjectKey::new("s3-gallery.db".to_string())
@@ -116,211 +116,95 @@ pub async fn run_sync(cli: &Cli, prefix: Option<String>, opts: ScanOptions) -> R
         Err(S3GalleryError::ObjectNotFound(_)) | Err(S3GalleryError::NotFound(_)) => {
             tracing::info!("no remote DB found, falling back to fresh scan");
             let pool = setup_db_pool(cli).await?;
-            return run_scan_core(&s3, &pool, &bucket, &bucket_str, prefix, &opts, cli).await;
+            return run_scan_core(s3.clone(), &pool, &bucket, &scope_prefix, &opts, cli).await;
         }
         Err(e) => return Err(e),
     }
 
     let pool = setup_db_pool(cli).await?;
-    run_scan_core(&s3, &pool, &bucket, &bucket_str, prefix, &opts, cli).await
+    run_scan_core(s3.clone(), &pool, &bucket, &scope_prefix, &opts, cli).await
 }
 
-/// Core scan logic: list OSS objects, discover hosts, update DB, push DB to remote.
+/// Core scan logic: use the pipeline to discover hosts, diff, process, and generate report.
 async fn run_scan_core(
-    s3: &Arc<dyn S3Client>,
+    s3: Arc<dyn S3Client>,
     pool: &SqlitePool,
     bucket: &BucketName,
-    bucket_str: &str,
-    prefix: Option<String>,
+    scope_prefix: &str,
     opts: &ScanOptions,
     cli: &Cli,
 ) -> Result<()> {
     let db_path = &cli.db_path;
 
-    // Determine scan scope prefix
-    let scope_prefix = prefix.unwrap_or_default();
-    let scope_prefix_str = if scope_prefix.is_empty() {
-        String::new()
-    } else {
-        format!("{}/", scope_prefix.trim_end_matches('/'))
-    };
-
     // Set up traffic tracking
     let recorder = Arc::new(TrafficRecorder::new(pool.clone()));
     let _agg_handle = spawn_aggregator(recorder.clone(), pool.clone(), 60);
 
-    // Try to read host.config.json at the scope root
-    let config_key_str = format!("{}.s3-gallery/host.config.json", scope_prefix_str);
-    let config_key = ObjectKey::new(config_key_str.clone())
-        .map_err(|e| S3GalleryError::Internal(format!("Invalid config key: {e}")))?;
+    // Build discover_s3 with LogLayer + TrafficLayer for "scan_discover"
+    let discover_core = S3Service::new(s3.clone());
+    let discover_s3 = ServiceBuilder::new()
+        .layer(LogLayer)
+        .layer(TrafficLayer::new(recorder.clone(), "discover", "scan_discover"))
+        .service(discover_core);
 
-    let root_config = s3.get_object(bucket, &config_key).await.ok();
+    // Build exif_s3 with LogLayer + TrafficLayer for "scan_exif"
+    let exif_core = S3Service::new(s3.clone());
+    let exif_s3 = ServiceBuilder::new()
+        .layer(LogLayer)
+        .layer(TrafficLayer::new(recorder.clone(), "exif", "scan_exif"))
+        .service(exif_core);
 
-    if let Some(data) = root_config {
-        // CASE 1: Root has config → scan entire scope as a single host
-        let host: HostIdentifier = serde_json::from_slice(&data).map_err(|e| {
-            S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}"))
-        })?;
+    // Build the pipeline: AggregateLayer -> ProcessLayer -> DiffLayer -> DiscoverLayer -> discover_s3
+    // ServiceBuilder applies layers from outside-in, so the last layer added is outermost.
+    let scope_prefix_key = ObjectKey::new(scope_prefix.to_string())
+        .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
-        tracing::info!(host_id = %host.host_id, name = %host.host_name, "found host config at scope root");
+    let mut pipeline = ServiceBuilder::new()
+        .layer(DiffLayer::new(pool.clone()))
+        .layer(ProcessLayer::new(pool.clone(), exif_s3))
+        .layer(AggregateLayer::new(pool.clone(), recorder.counters.clone()))
+        .service(DiscoverLayer::new(pool.clone()).layer(discover_s3));
 
-        let scan_prefix = ObjectKey::new(scope_prefix_str.clone())
-            .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
-
-        let result = scan_host(s3, pool, bucket, &host, &scan_prefix, opts, Some(&recorder)).await?;
-
-        // Save host config
-        HostConfigEntry::upsert_host_config(
-            pool,
-            &host.host_id,
-            bucket_str,
-            &cli.endpoint,
-            &cli.region,
-        )
+    let resp = pipeline
+        .call(ScanRequest {
+            bucket: bucket.clone(),
+            scope_prefix: scope_prefix_key,
+            concurrency: opts.concurrency,
+            extract_metadata: opts.extract_metadata,
+            generate_thumbnails: opts.with_thumbnails,
+            client_id: format!("cli-{}", bucket.as_str()),
+        })
         .await?;
 
+    // Print report
+    if let Some(report) = &resp.report {
         println!("Scan complete:");
-        println!("  Host: {} ({})", host.host_name, host.host_id);
-        println!("  Total files: {}", result.total_files);
-        println!("  New files: {}", result.new_files);
-        println!("  Changed files: {}", result.changed_files);
-        println!("  Deleted files: {}", result.deleted_files);
-        println!("  Duration: {:.1}s", result.duration_secs);
-    } else {
-        // CASE 2: No root config → discover hosts in first-level subdirectories
-        let list_prefix = ObjectKey::new(scope_prefix_str.clone())
-            .map_err(|e| S3GalleryError::Internal(format!("Invalid prefix: {e}")))?;
+        println!("  Hosts: {}", report.host_count);
+        println!("  Total files: {}", report.total_files);
+        println!("  Total size: {} bytes", report.total_size);
+        println!("  New files: {}", report.new_files);
+        println!("  Changed files: {}", report.changed_files);
+        println!("  Deleted files: {}", report.deleted_files);
+        println!("  Duration: {:.1}s", report.duration_secs);
+        println!(
+            "  Traffic (download): {:.2} MB",
+            report.total_download_bytes as f64 / 1_000_000.0
+        );
+        println!(
+            "  Traffic (upload): {:.2} MB",
+            report.total_upload_bytes as f64 / 1_000_000.0
+        );
+        println!("  Total requests: {}", report.total_requests);
+        println!("  Estimated cost: ${:.4}", report.estimated_cost);
 
-        let all_objects = s3.list_objects(bucket, &list_prefix).await?;
-
-        // Extract unique first-level directory names
-        let mut subdirs: BTreeSet<String> = BTreeSet::new();
-        for obj in &all_objects {
-            let key = obj.key.as_str();
-            if let Some(rest) = key.strip_prefix(&scope_prefix_str) {
-                if let Some(slash) = rest.find('/') {
-                    let dir = &rest[..slash];
-                    if !dir.is_empty() {
-                        subdirs.insert(dir.to_string());
-                    }
-                }
+        // File type breakdown
+        if !report.file_type_breakdown.is_empty() {
+            println!("  File types:");
+            for (ft, count) in &report.file_type_breakdown {
+                println!("    {}: {}", ft, count);
             }
-        }
-
-        let mut total_files: u64 = 0;
-        let mut total_new: u64 = 0;
-        let mut total_changed: u64 = 0;
-        let mut total_deleted: u64 = 0;
-        let mut host_count: u64 = 0;
-        let mut duration_secs: f64 = 0.0;
-
-        for dir in &subdirs {
-            let dir_prefix_str = format!("{}{}/", scope_prefix_str, dir);
-            let dir_config_key_str =
-                format!("{}{}/.s3-gallery/host.config.json", scope_prefix_str, dir);
-            let dir_config_key = ObjectKey::new(dir_config_key_str)
-                .map_err(|e| S3GalleryError::Internal(format!("Invalid config key: {e}")))?;
-
-            let dir_config = s3.get_object(bucket, &dir_config_key).await.ok();
-
-            if let Some(data) = dir_config {
-                // This subdirectory is a host
-                let host: HostIdentifier = serde_json::from_slice(&data).map_err(|e| {
-                    S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}"))
-                })?;
-
-                tracing::info!(host_id = %host.host_id, name = %host.host_name, dir = %dir, "found host config in subdirectory");
-
-                let scan_prefix = ObjectKey::new(dir_prefix_str.clone())
-                    .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
-
-                let result = scan_host(s3, pool, bucket, &host, &scan_prefix, opts, Some(&recorder)).await?;
-
-                total_files += result.total_files;
-                total_new += result.new_files;
-                total_changed += result.changed_files;
-                total_deleted += result.deleted_files;
-                duration_secs += result.duration_secs;
-                host_count += 1;
-
-                // Save host config
-                HostConfigEntry::upsert_host_config(
-                    pool,
-                    &host.host_id,
-                    bucket_str,
-                    &cli.endpoint,
-                    &cli.region,
-                )
-                .await?;
-
-                println!(
-                    "  Host: {} ({}) — {} files",
-                    host.host_name, host.host_id, result.total_files
-                );
-            } else {
-                // No host config → scan as regular directory, use dir name as host_id
-                tracing::info!(dir = %dir, "no host config, scanning as regular directory");
-
-                // Build a temporary host with dir name as host_id
-                let temp_host = HostIdentifier::build(
-                    dir.clone(),
-                    dir,
-                    "auto",
-                    "",
-                    bucket.clone(),
-                    ObjectKey::new(dir_prefix_str.clone())
-                        .map_err(|e| S3GalleryError::Internal(format!("invalid prefix: {e}")))?,
-                    chrono::Utc::now().to_rfc3339(),
-                    1,
-                )?;
-
-                let scan_prefix = ObjectKey::new(dir_prefix_str.clone())
-                    .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
-
-                let result = scan_host(s3, pool, bucket, &temp_host, &scan_prefix, opts, Some(&recorder)).await?;
-
-                total_files += result.total_files;
-                total_new += result.new_files;
-                total_changed += result.changed_files;
-                total_deleted += result.deleted_files;
-                duration_secs += result.duration_secs;
-
-                // Save minimal host config (type=auto, no name) for serve to discover
-                HostConfigEntry::upsert_host_config(
-                    pool,
-                    dir,
-                    bucket_str,
-                    &cli.endpoint,
-                    &cli.region,
-                )
-                .await?;
-
-                println!(
-                    "  Directory: {} — {} files (no host config)",
-                    dir, result.total_files
-                );
-            }
-        }
-
-        println!("Scan complete:");
-        if host_count > 0 {
-            println!("  Hosts: {}", host_count);
-        }
-        println!("  Total files: {}", total_files);
-        println!("  New files: {}", total_new);
-        println!("  Changed files: {}", total_changed);
-        println!("  Deleted files: {}", total_deleted);
-        println!("  Duration: {:.1}s", duration_secs);
-        if host_count == 0 {
-            println!(
-                "# init: s3-gallery init --bucket {} --prefix <name> --name <display-name>",
-                bucket_str
-            );
         }
     }
-
-    // Flush traffic counters to DB before pushing
-    s3_gallery_core::s3::traffic_persist::flush_counters(&recorder.counters, &pool).await;
 
     // Auto push DB to remote
     let db_key = ObjectKey::new("s3-gallery.db".to_string())
@@ -330,48 +214,6 @@ async fn run_scan_core(
     println!("  DB pushed to remote.");
 
     Ok(())
-}
-
-/// Scan a single host and return the scan result.
-async fn scan_host(
-    s3: &Arc<dyn S3Client>,
-    pool: &SqlitePool,
-    bucket: &BucketName,
-    host: &HostIdentifier,
-    scan_prefix: &ObjectKey,
-    opts: &ScanOptions,
-    recorder: Option<&Arc<TrafficRecorder>>,
-) -> Result<ScanResult> {
-    // Build S3 service stack with traffic recording
-    let core = S3Service::new(s3.clone());
-
-    let s3_stack = if let Some(rec) = recorder {
-        ServiceBuilder::new()
-            .layer(LogLayer)
-            .service(
-                ServiceBuilder::new()
-                    .layer(TrafficLayer::new(rec.clone(), &host.host_id, "exif_extraction"))
-                    .service(core),
-            )
-    } else {
-        ServiceBuilder::new()
-            .layer(LogLayer)
-            .service(core)
-    };
-
-    let scan_config = ScanConfig {
-        s3: s3_stack,
-        db: pool.clone(),
-        bucket: bucket.clone(),
-        prefix: scan_prefix.clone(),
-        concurrency: opts.concurrency,
-        extract_metadata: opts.extract_metadata,
-        generate_thumbnails: opts.with_thumbnails,
-        client_id: format!("cli-{}", host.host_id),
-        host_id: host.host_id.clone(),
-    };
-
-    core_run_scan(scan_config).await
 }
 
 #[derive(Debug, clap::Parser)]
