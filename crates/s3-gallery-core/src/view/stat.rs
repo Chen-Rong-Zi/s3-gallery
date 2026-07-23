@@ -8,7 +8,7 @@ use sqlx::SqlitePool;
 use crate::db::models::FileEntry;
 use crate::error::Result;
 use crate::types::FileSize;
-use crate::util::db_helpers::fetch_all_opt;
+use crate::util::db_helpers::{fetch_all_opt, fetch_scalar_opt};
 
 /// Statistics about files in the database.
 #[derive(Debug, Clone)]
@@ -38,78 +38,40 @@ pub async fn get_stats(db: &SqlitePool, host_id: Option<&str>) -> Result<FileSta
     let mut by_category = HashMap::new();
     let mut by_file_type = HashMap::new();
 
-    let total_files: i64 = if let Some(hid) = host_id {
-        sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0")
-            .bind(hid)
-            .fetch_one(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    } else {
-        sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE is_deleted = 0")
-            .fetch_one(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    };
+    let total_files: i64 = fetch_scalar_opt(
+        db,
+        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0",
+        host_id,
+    )
+    .await?;
 
-    let total_size: Option<i64> = if let Some(hid) = host_id {
-        sqlx::query_scalar("SELECT SUM(size) FROM files WHERE host_id = ? AND is_deleted = 0")
-            .bind(hid)
-            .fetch_one(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    } else {
-        sqlx::query_scalar("SELECT SUM(size) FROM files WHERE is_deleted = 0")
-            .fetch_one(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    };
+    let total_size: Option<i64> = fetch_scalar_opt(
+        db,
+        "SELECT SUM(size) FROM files WHERE host_id = ? AND is_deleted = 0",
+        host_id,
+    )
+    .await?;
 
-    let deleted_files: i64 = if let Some(hid) = host_id {
-        sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 1")
-            .bind(hid)
-            .fetch_one(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    } else {
-        sqlx::query_scalar("SELECT COUNT(*) FROM files WHERE is_deleted = 1")
-            .fetch_one(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    };
+    let deleted_files: i64 = fetch_scalar_opt(
+        db,
+        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 1",
+        host_id,
+    )
+    .await?;
 
-    let metadata_extracted: i64 = if let Some(hid) = host_id {
-        sqlx::query_scalar(
-            "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0 AND metadata_state = 'extracted'",
-        )
-        .bind(hid)
-        .fetch_one(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    } else {
-        sqlx::query_scalar(
-            "SELECT COUNT(*) FROM files WHERE is_deleted = 0 AND metadata_state = 'extracted'",
-        )
-        .fetch_one(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    };
+    let metadata_extracted: i64 = fetch_scalar_opt(
+        db,
+        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0 AND metadata_state = 'extracted'",
+        host_id,
+    )
+    .await?;
 
-    let metadata_pending: i64 = if let Some(hid) = host_id {
-        sqlx::query_scalar(
-            "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0 AND metadata_state = 'pending'",
-        )
-        .bind(hid)
-        .fetch_one(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    } else {
-        sqlx::query_scalar(
-            "SELECT COUNT(*) FROM files WHERE is_deleted = 0 AND metadata_state = 'pending'",
-        )
-        .fetch_one(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    };
+    let metadata_pending: i64 = fetch_scalar_opt(
+        db,
+        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0 AND metadata_state = 'pending'",
+        host_id,
+    )
+    .await?;
 
     let files: Vec<FileEntry> = fetch_all_opt(
         db,

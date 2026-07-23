@@ -6,6 +6,7 @@ use sqlx::SqlitePool;
 
 use crate::db::models::FileEntry;
 use crate::error::{Result, S3GalleryError};
+use crate::util::db_helpers::fetch_all_opt;
 
 /// A timeline entry containing files from a specific date.
 #[derive(Debug, Clone)]
@@ -61,24 +62,13 @@ pub async fn get_timeline_gallery(
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?
         }
     } else {
-        if let Some(hid) = host_id {
-            sqlx::query_as(
-                "SELECT * FROM files WHERE host_id = ? AND is_deleted = 0 \
-                 ORDER BY effective_date DESC, last_modified DESC",
-            )
-            .bind(hid)
-            .fetch_all(db)
-            .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
-        } else {
-            sqlx::query_as(
-                "SELECT * FROM files WHERE is_deleted = 0 \
-                 ORDER BY effective_date DESC, last_modified DESC",
-            )
-            .fetch_all(db)
-            .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
-        }
+        fetch_all_opt::<FileEntry>(
+            db,
+            "SELECT * FROM files WHERE host_id = ? AND is_deleted = 0 \
+             ORDER BY effective_date DESC, last_modified DESC",
+            host_id,
+        )
+        .await?
     };
 
     // Group by date (effective_date or last_modified)

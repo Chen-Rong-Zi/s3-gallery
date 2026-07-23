@@ -7,8 +7,12 @@ use crate::error::{Result, S3GalleryError};
 /// Execute a query with an optional host_id binding.
 ///
 /// If `host_id` is `Some`, the query is executed with `host_id` bound to the
-/// first `?` parameter. If `None`, the query is executed as-is (the query
-/// should not contain a `WHERE host_id = ?` clause in that case).
+/// first `?` parameter. If `None`, the `WHERE host_id = ?` clause is stripped
+/// from the SQL so the query runs without host filtering.
+///
+/// The SQL should contain `WHERE host_id = ?` followed by either `AND ` or
+/// nothing more. When `host_id` is `None`, the `host_id = ?` condition
+/// is removed from the WHERE clause.
 ///
 /// # Errors
 ///
@@ -28,10 +32,61 @@ where
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))
     } else {
-        sqlx::query_as::<_, T>(sql)
+        let sql = strip_host_id_condition(sql);
+        sqlx::query_as::<_, T>(&sql)
             .fetch_all(db)
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))
+    }
+}
+
+/// Execute a scalar query with an optional host_id binding.
+///
+/// If `host_id` is `Some`, the query is executed with `host_id` bound to the
+/// first `?` parameter. If `None`, the `WHERE host_id = ?` clause is stripped
+/// from the SQL so the query runs without host filtering.
+///
+/// # Errors
+///
+/// Returns `S3GalleryError::DbError` if the query fails.
+pub async fn fetch_scalar_opt<T>(
+    db: &SqlitePool,
+    sql: &str,
+    host_id: Option<&str>,
+) -> Result<T>
+where
+    T: for<'a> sqlx::Decode<'a, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
+{
+    if let Some(hid) = host_id {
+        sqlx::query_scalar(sql)
+            .bind(hid)
+            .fetch_one(db)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))
+    } else {
+        let sql = strip_host_id_condition(sql);
+        sqlx::query_scalar(&sql)
+            .fetch_one(db)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))
+    }
+}
+
+/// Strip `WHERE host_id = ?` (and the following `AND ` if present) from a SQL string.
+///
+/// This is used internally by `fetch_all_opt` and `fetch_scalar_opt` when
+/// `host_id` is `None` to remove the host filtering condition.
+fn strip_host_id_condition(sql: &str) -> String {
+    if let Some(pos) = sql.find("WHERE host_id = ?") {
+        let before = &sql[..pos];
+        let after = &sql[pos + "WHERE host_id = ?".len()..];
+        if after.starts_with(" AND ") {
+            format!("{}WHERE{}", before, &after[4..])
+        } else {
+            format!("{}{}", before, after)
+        }
+    } else {
+        sql.to_string()
     }
 }
 
