@@ -358,7 +358,7 @@ impl MetadataEntry {
     /// Returns `S3GalleryError::DbError` if the database operation fails.
     pub async fn insert(pool: &SqlitePool, entry: &MetadataEntry) -> Result<()> {
         sqlx::query(
-            "INSERT INTO metadata (file_key, namespace, key, value, extracted_at, partial) \
+            "INSERT OR REPLACE INTO metadata (file_key, namespace, key, value, extracted_at, partial) \
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&entry.file_key)
@@ -617,7 +617,7 @@ impl FileTagEntry {
     ///
     /// Returns `S3GalleryError::DbError` if the database operation fails.
     pub async fn insert(pool: &SqlitePool, entry: &FileTagEntry) -> Result<()> {
-        sqlx::query("INSERT INTO file_tags (file_key, tag_id) VALUES (?, ?)")
+        sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
             .bind(&entry.file_key)
             .bind(entry.tag_id)
             .execute(pool)

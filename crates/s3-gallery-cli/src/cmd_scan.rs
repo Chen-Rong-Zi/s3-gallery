@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use tower::Service;
 use tower::ServiceBuilder;
 
 use crate::cli::Cli;
@@ -155,15 +156,18 @@ async fn run_scan_core(
         .service(exif_core);
 
     // Build the pipeline: AggregateLayer -> ProcessLayer -> DiffLayer -> DiscoverLayer -> discover_s3
-    // ServiceBuilder applies layers from outside-in, so the last layer added is outermost.
+    // ServiceBuilder applies layers from outside-in, so the LAST layer is the outermost wrapper.
+    // We want: AggregateLayer(ProcessLayer(DiffLayer(DiscoverLayer(discover_s3))))
+    // So: ServiceBuilder::new().layer(Aggregate).layer(Process).layer(Diff).layer(Discover).service(discover_s3)
     let scope_prefix_key = ObjectKey::new(scope_prefix.to_string())
         .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
     let mut pipeline = ServiceBuilder::new()
-        .layer(DiffLayer::new(pool.clone()))
-        .layer(ProcessLayer::new(pool.clone(), exif_s3))
         .layer(AggregateLayer::new(pool.clone(), recorder.counters.clone()))
-        .service(DiscoverLayer::new(pool.clone()).layer(discover_s3));
+        .layer(ProcessLayer::new(pool.clone(), exif_s3))
+        .layer(DiffLayer::new(pool.clone()))
+        .layer(DiscoverLayer::new(pool.clone()))
+        .service(discover_s3);
 
     let resp = pipeline
         .call(ScanRequest {

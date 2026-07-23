@@ -78,51 +78,44 @@ where
             // 1. Call inner chain
             let mut resp = inner.call(req).await?;
 
-            // 2. Flush traffic counters to DB
-            flush_counters(&counters, &db).await;
-
-            // 3. Read traffic from DB for scan_discover and scan_exif
+            // 2. Read traffic counters BEFORE flushing (flush resets to 0)
             let mut traffic_by_stage: HashMap<String, HashMap<String, TrafficByOperation>> =
                 HashMap::new();
+            use std::sync::atomic::Ordering;
 
-            let traffic_rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
-                "SELECT business, operation, SUM(bytes), SUM(count) \
-                 FROM traffic_log \
-                 WHERE business IN ('scan_discover', 'scan_exif') \
-                 AND recorded_at >= datetime('now', '-1 hour') \
-                 GROUP BY business, operation",
-            )
-            .fetch_all(&db)
-            .await
-            .map_err(|e| S3GalleryError::DbError(format!("Failed to read traffic: {e}")))?;
+            let total_download = counters.download_bytes.load(Ordering::Relaxed);
+            let total_upload = counters.upload_bytes.load(Ordering::Relaxed);
+            let total_requests = counters.request_count.load(Ordering::Relaxed);
 
-            let mut total_download = 0u64;
-            let mut total_upload = 0u64;
-            let mut total_requests = 0u64;
-
-            for (business, operation, bytes, count) in &traffic_rows {
-                let stage = traffic_by_stage.entry(business.clone()).or_default();
-                stage.insert(
-                    operation.clone(),
-                    TrafficByOperation {
-                        count: *count as u64,
-                        bytes: *bytes as u64,
-                    },
-                );
-
-                match operation.as_str() {
-                    "GetObject" | "GetObjectRange" | "HeadObject" | "ListObjects" => {
-                        total_download = total_download.saturating_add(*bytes as u64);
-                    }
-                    "PutObject" | "PutObjectIfNoneMatch" => {
-                        total_upload = total_upload.saturating_add(*bytes as u64);
-                    }
-                    _ => {
-                        total_download = total_download.saturating_add(*bytes as u64);
-                    }
+            // Build operation-level breakdown under "scan" stage
+            let mut scan_stage = HashMap::new();
+            for op_idx in 0..counters.per_operation.len() {
+                let bytes = counters.per_operation[op_idx].load(Ordering::Relaxed);
+                if bytes > 0 {
+                    let op_name = match op_idx {
+                        0 => "GetObject",
+                        1 => "GetObjectRange",
+                        2 => "PutObject",
+                        3 => "PutObjectIfNoneMatch",
+                        4 => "ListObjects",
+                        5 => "HeadObject",
+                        6 => "DeleteObject",
+                        7 => "ObjectExists",
+                        _ => "Unknown",
+                    };
+                    scan_stage.insert(
+                        op_name.to_string(),
+                        TrafficByOperation {
+                            count: 0,
+                            bytes,
+                        },
+                    );
                 }
-                total_requests = total_requests.saturating_add(*count as u64);
             }
+            traffic_by_stage.insert("scan".to_string(), scan_stage);
+
+            // 3. Flush traffic counters to DB (for persistence)
+            flush_counters(&counters, &db).await;
 
             // 4. Compute file type breakdown from diff_results
             let mut file_type_breakdown: HashMap<String, u64> = HashMap::new();
