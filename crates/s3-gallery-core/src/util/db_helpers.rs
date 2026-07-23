@@ -1,0 +1,109 @@
+//! Database query helpers — common patterns for Option<host_id> branching.
+
+use sqlx::SqlitePool;
+
+use crate::error::{Result, S3GalleryError};
+
+/// Execute a query with an optional host_id binding.
+///
+/// If `host_id` is `Some`, the query is executed with `host_id` bound to the
+/// first `?` parameter. If `None`, the query is executed as-is (the query
+/// should not contain a `WHERE host_id = ?` clause in that case).
+///
+/// # Errors
+///
+/// Returns `S3GalleryError::DbError` if the query fails.
+pub async fn fetch_all_opt<T>(
+    db: &SqlitePool,
+    sql: &str,
+    host_id: Option<&str>,
+) -> Result<Vec<T>>
+where
+    T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
+{
+    if let Some(hid) = host_id {
+        sqlx::query_as::<_, T>(sql)
+            .bind(hid)
+            .fetch_all(db)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))
+    } else {
+        sqlx::query_as::<_, T>(sql)
+            .fetch_all(db)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))
+    }
+}
+
+/// Append `AND host_id = ?` to a SQL condition when a host_id is provided.
+/// Returns the modified SQL string and any bind parameters.
+pub fn maybe_host_id(host_id: Option<&str>, sql: &str) -> (String, Vec<String>) {
+    if let Some(hid) = host_id {
+        (format!("{} AND host_id = ?", sql), vec![hid.to_string()])
+    } else {
+        (sql.to_string(), vec![])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::models::HostConfigEntry;
+    use crate::db::pool::create_pool;
+    use crate::db::schema::run_migrations;
+    use crate::error::S3GalleryError;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_fetch_all_opt_with_host_id() -> crate::error::Result<()> {
+        let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        let db_path = dir.path().join("test.db");
+        let pool = create_pool(&db_path).await?;
+        run_migrations(&pool).await?;
+
+        HostConfigEntry::insert(&pool, &HostConfigEntry {
+            host_id: "h1".into(), host_name: "Host 1".into(),
+            host_type: "test".into(), description: "".into(),
+            created_at: "now".into(), bucket: "".into(),
+            endpoint: "".into(), region: "".into(),
+        }).await?;
+        HostConfigEntry::insert(&pool, &HostConfigEntry {
+            host_id: "h2".into(), host_name: "Host 2".into(),
+            host_type: "test".into(), description: "".into(),
+            created_at: "now".into(), bucket: "".into(),
+            endpoint: "".into(), region: "".into(),
+        }).await?;
+
+        let sql = "SELECT * FROM host_config WHERE host_id = ?";
+        let results: Vec<HostConfigEntry> = fetch_all_opt(&pool, sql, Some("h1")).await?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].host_id, "h1");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_fetch_all_opt_without_host_id() -> crate::error::Result<()> {
+        let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        let db_path = dir.path().join("test.db");
+        let pool = create_pool(&db_path).await?;
+        run_migrations(&pool).await?;
+
+        HostConfigEntry::insert(&pool, &HostConfigEntry {
+            host_id: "h1".into(), host_name: "Host 1".into(),
+            host_type: "test".into(), description: "".into(),
+            created_at: "now".into(), bucket: "".into(),
+            endpoint: "".into(), region: "".into(),
+        }).await?;
+        HostConfigEntry::insert(&pool, &HostConfigEntry {
+            host_id: "h2".into(), host_name: "Host 2".into(),
+            host_type: "test".into(), description: "".into(),
+            created_at: "now".into(), bucket: "".into(),
+            endpoint: "".into(), region: "".into(),
+        }).await?;
+
+        let sql = "SELECT * FROM host_config ORDER BY host_id";
+        let results: Vec<HostConfigEntry> = fetch_all_opt(&pool, sql, None).await?;
+        assert_eq!(results.len(), 2);
+        Ok(())
+    }
+}
