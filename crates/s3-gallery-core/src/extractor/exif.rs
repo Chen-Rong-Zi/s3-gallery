@@ -33,10 +33,17 @@ impl ExifExtractor {
             if value_str.len() > 1024 {
                 continue;
             }
+            // Known tags: key = human-readable name (e.g. "Make"), value = tag value.
+            // Unknown/vendor tags: key = value, value = empty (preserve data without
+            // exposing raw tag IDs like "Tag(Exif, 39424)").
+            let (key, value) = match field.tag.description() {
+                Some(_) => (field.tag.to_string(), value_str),
+                None => (value_str, String::new()),
+            };
             items.push(MetadataItem {
                 namespace: "exif",
-                key: field.tag.to_string(),
-                value: value_str,
+                key,
+                value,
             });
         }
         Ok(items)
