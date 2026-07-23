@@ -1,10 +1,9 @@
 use crate::cli::{Cli, DbCommands};
 use s3_gallery_core::db::status::{check_db_status, DbStatus};
 use s3_gallery_core::error::{Result, S3GalleryError};
-use s3_gallery_core::s3::client::S3Client;
+use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::s3::config::HostIdentifier;
 use s3_gallery_core::s3::config::OssConfig;
-use s3_gallery_core::s3::lock::check_lock;
 use s3_gallery_core::s3::real::RealS3Client;
 use s3_gallery_core::types::*;
 use std::sync::Arc;
@@ -20,7 +19,7 @@ pub async fn run_db(cli: &Cli, host: &str, cmd: &DbCommands) -> Result<()> {
     let host_id = HostIdentifier::new(bucket.clone(), host)
         .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid host: {}", e)))?;
 
-    let s3 = create_s3_client(cli).await?;
+    let mut s3 = create_s3_client(cli).await?;
 
     match cmd {
         DbCommands::Pull => {
@@ -62,7 +61,7 @@ pub async fn run_db(cli: &Cli, host: &str, cmd: &DbCommands) -> Result<()> {
         }
         DbCommands::Lock => {
             let lock_key = host_id.lock_path();
-            let locked = check_lock(s3.as_ref(), &bucket, lock_key).await?;
+            let locked = s3.object_exists(&bucket, &lock_key).await?;
             if locked {
                 println!("Lock is held.");
             } else {
@@ -90,7 +89,7 @@ pub async fn run_db(cli: &Cli, host: &str, cmd: &DbCommands) -> Result<()> {
     Ok(())
 }
 
-async fn create_s3_client(cli: &Cli) -> Result<Arc<dyn S3Client>> {
+async fn create_s3_client(cli: &Cli) -> Result<S3Service> {
     let bucket_str = cli.bucket.as_ref().ok_or_else(|| {
         S3GalleryError::InvalidConfig("--bucket is required for DB commands".to_string())
     })?;
@@ -105,5 +104,5 @@ async fn create_s3_client(cli: &Cli) -> Result<Arc<dyn S3Client>> {
         10,
     )?;
     let client = RealS3Client::from_config(&config);
-    Ok(Arc::new(client))
+    Ok(S3Service::new(Arc::new(client)))
 }
