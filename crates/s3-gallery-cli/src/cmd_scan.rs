@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use tower::ServiceBuilder;
+
 use crate::cli::Cli;
 use s3_gallery_core::db::models::HostConfigEntry;
 use s3_gallery_core::db::pool::create_pool;
@@ -9,7 +11,11 @@ use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::HostIdentifier;
 use s3_gallery_core::s3::config::OssConfig;
+use s3_gallery_core::s3::layers::{LogLayer, TrafficLayer};
 use s3_gallery_core::s3::real::RealS3Client;
+use s3_gallery_core::s3::s3_service::S3Service;
+use s3_gallery_core::s3::traffic_persist::spawn_aggregator;
+use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
 use s3_gallery_core::scan::scanner::run_scan as core_run_scan;
 use s3_gallery_core::scan::scanner::ScanConfig;
 use s3_gallery_core::scan::scanner::ScanResult;
@@ -139,6 +145,10 @@ async fn run_scan_core(
         format!("{}/", scope_prefix.trim_end_matches('/'))
     };
 
+    // Set up traffic tracking
+    let recorder = Arc::new(TrafficRecorder::new(pool.clone()));
+    let _agg_handle = spawn_aggregator(recorder.clone(), pool.clone(), 60);
+
     // Try to read host.config.json at the scope root
     let config_key_str = format!("{}.s3-gallery/host.config.json", scope_prefix_str);
     let config_key = ObjectKey::new(config_key_str.clone())
@@ -157,7 +167,7 @@ async fn run_scan_core(
         let scan_prefix = ObjectKey::new(scope_prefix_str.clone())
             .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
-        let result = scan_host(s3, pool, bucket, &host, &scan_prefix, opts).await?;
+        let result = scan_host(s3, pool, bucket, &host, &scan_prefix, opts, Some(&recorder)).await?;
 
         // Save host config
         HostConfigEntry::upsert_host_config(
@@ -224,7 +234,7 @@ async fn run_scan_core(
                 let scan_prefix = ObjectKey::new(dir_prefix_str.clone())
                     .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
-                let result = scan_host(s3, pool, bucket, &host, &scan_prefix, opts).await?;
+                let result = scan_host(s3, pool, bucket, &host, &scan_prefix, opts, Some(&recorder)).await?;
 
                 total_files += result.total_files;
                 total_new += result.new_files;
@@ -267,7 +277,7 @@ async fn run_scan_core(
                 let scan_prefix = ObjectKey::new(dir_prefix_str.clone())
                     .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
-                let result = scan_host(s3, pool, bucket, &temp_host, &scan_prefix, opts).await?;
+                let result = scan_host(s3, pool, bucket, &temp_host, &scan_prefix, opts, Some(&recorder)).await?;
 
                 total_files += result.total_files;
                 total_new += result.new_files;
@@ -327,7 +337,25 @@ async fn scan_host(
     host: &HostIdentifier,
     scan_prefix: &ObjectKey,
     opts: &ScanOptions,
+    recorder: Option<&Arc<TrafficRecorder>>,
 ) -> Result<ScanResult> {
+    // Build S3 service stack with traffic recording
+    let core = S3Service::new(s3.clone());
+
+    let _s3_stack = if let Some(rec) = recorder {
+        ServiceBuilder::new()
+            .layer(LogLayer)
+            .service(
+                ServiceBuilder::new()
+                    .layer(TrafficLayer::new(rec.clone(), &host.host_id, "exif_extraction"))
+                    .service(core),
+            )
+    } else {
+        ServiceBuilder::new()
+            .layer(LogLayer)
+            .service(core)
+    };
+
     let scan_config = ScanConfig {
         s3: s3.clone(),
         db: pool.clone(),
