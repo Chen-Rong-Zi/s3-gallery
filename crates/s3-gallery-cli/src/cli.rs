@@ -105,6 +105,34 @@ pub enum Commands {
         #[arg(long)]
         readonly: bool,
     },
+    /// Traffic analysis commands
+    #[command(subcommand)]
+    Traffic(TrafficCommands),
+}
+
+#[derive(Subcommand)]
+pub enum TrafficCommands {
+    /// Show traffic summary for a period
+    Summary {
+        /// Host ID filter
+        #[arg(long)]
+        host: Option<String>,
+        /// Period: day|month
+        #[arg(long, default_value = "day")]
+        period: String,
+        /// Start date (ISO-8601)
+        #[arg(long)]
+        since: Option<String>,
+        /// End date (ISO-8601)
+        #[arg(long)]
+        until: Option<String>,
+    },
+    /// Show live traffic
+    Live {
+        /// Refresh interval in seconds
+        #[arg(long, default_value = "2")]
+        interval: u64,
+    },
 }
 
 #[derive(Subcommand)]
