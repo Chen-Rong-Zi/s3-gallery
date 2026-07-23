@@ -145,7 +145,16 @@ where
                                 });
                             }
                             Ok(ExifResult::None) => {
-                                // ExifService already set metadata_state = 'extracted'
+                                // ExifService already set metadata_state = 'extracted'.
+                                // Clean up stale tags from previous scans (e.g. when a file
+                                // was previously incorrectly tagged because of FuturesUnordered
+                                // ordering issues).
+                                let _result = sqlx::query(
+                                    "DELETE FROM file_tags WHERE file_key = ?",
+                                )
+                                .bind(&ctx.key)
+                                .execute(&db)
+                                .await;
                             }
                             Err(_) => {
                                 failed += 1;
