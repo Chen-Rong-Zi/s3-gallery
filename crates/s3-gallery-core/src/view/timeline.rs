@@ -42,7 +42,11 @@ pub async fn get_timeline(db: &SqlitePool, host_id: Option<&str>) -> Result<Vec<
     let mut grouped: BTreeMap<String, Vec<FileEntry>> = BTreeMap::new();
 
     for file in files {
-        let date = extract_date(&file.last_modified);
+        let date = if file.effective_date.is_empty() {
+            extract_date(&file.last_modified)
+        } else {
+            file.effective_date.clone()
+        };
         grouped.entry(date).or_default().push(file);
     }
 

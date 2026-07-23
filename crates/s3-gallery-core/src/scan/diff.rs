@@ -95,7 +95,7 @@ pub async fn apply_diff(
                 content_type,
                 file_type: file_type.to_string(),
                 metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
+                effective_date: extract_date(&obj.last_modified),
                 is_deleted: false,
             },
         )
@@ -117,7 +117,7 @@ pub async fn apply_diff(
                 content_type,
                 file_type: file_type.to_string(),
                 metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
+                effective_date: extract_date(&obj.last_modified),
                 is_deleted: false,
             },
         )
@@ -129,6 +129,16 @@ pub async fn apply_diff(
     }
 
     Ok(())
+}
+
+/// Extract the YYYY-MM-DD date portion from a timestamp string.
+/// Returns the full string if it's shorter than 10 characters.
+fn extract_date(timestamp: &str) -> String {
+    if timestamp.len() >= 10 {
+        timestamp[..10].to_string()
+    } else {
+        timestamp.to_string()
+    }
 }
 
 #[cfg(test)]
