@@ -1,5 +1,6 @@
 use crate::db::models::FileEntry;
 use crate::s3::client::ObjectSummary;
+use crate::types::FileType;
 use std::collections::HashMap;
 
 /// Result of diffing S3 listing against DB state
@@ -65,6 +66,69 @@ pub fn diff_objects(s3_objects: &[ObjectSummary], db_entries: &[FileEntry]) -> D
         deleted_keys,
         unchanged_count,
     }
+}
+
+/// Apply a diff result to the database: upsert new/changed, mark deleted.
+///
+/// # Errors
+///
+/// Returns `S3GalleryError::DbError` if any database operation fails.
+pub async fn apply_diff(
+    pool: &sqlx::SqlitePool,
+    host_id: &str,
+    diff: &DiffResult,
+    classify_file: impl Fn(&crate::types::ObjectKey) -> FileType,
+    get_content_type: impl Fn(&crate::types::ObjectKey) -> Option<String>,
+) -> crate::error::Result<()> {
+    for obj in &diff.new_objects {
+        let file_type = classify_file(&obj.key);
+        let content_type = get_content_type(&obj.key);
+
+        FileEntry::upsert(
+            pool,
+            &FileEntry {
+                host_id: host_id.to_string(),
+                key: obj.key.as_str().to_string(),
+                etag: obj.etag.as_str().to_string(),
+                size: obj.size.as_u64() as i64,
+                last_modified: obj.last_modified.clone(),
+                content_type,
+                file_type: file_type.to_string(),
+                metadata_state: "pending".to_string(),
+                effective_date: "".to_string(),
+                is_deleted: false,
+            },
+        )
+        .await?;
+    }
+
+    for obj in &diff.changed_objects {
+        let file_type = classify_file(&obj.key);
+        let content_type = get_content_type(&obj.key);
+
+        FileEntry::upsert(
+            pool,
+            &FileEntry {
+                host_id: host_id.to_string(),
+                key: obj.key.as_str().to_string(),
+                etag: obj.etag.as_str().to_string(),
+                size: obj.size.as_u64() as i64,
+                last_modified: obj.last_modified.clone(),
+                content_type,
+                file_type: file_type.to_string(),
+                metadata_state: "pending".to_string(),
+                effective_date: "".to_string(),
+                is_deleted: false,
+            },
+        )
+        .await?;
+    }
+
+    for key in &diff.deleted_keys {
+        FileEntry::mark_deleted(pool, host_id, key).await?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
