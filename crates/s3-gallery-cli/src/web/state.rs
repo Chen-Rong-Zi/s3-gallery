@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use s3_gallery_core::db::models::HostConfigEntry;
 use s3_gallery_core::s3::client::S3Client;
+use s3_gallery_core::s3::s3_service::S3Service;
+use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
 use sqlx::SqlitePool;
 
 /// Shared application state for multi-host serving.
@@ -14,6 +16,10 @@ pub struct AppState {
     pub hosts: Vec<HostConfigEntry>,
     /// S3 clients keyed by endpoint URL (endpoint "" = CLI default).
     pub s3_clients: HashMap<String, Arc<dyn S3Client>>,
+    /// Tower-composed S3 service stack.
+    pub s3_stack: S3Service,
+    /// Optional traffic recorder.
+    pub traffic_recorder: Option<Arc<TrafficRecorder>>,
     /// Optional prefix filter from CLI --prefix.
     pub prefix: Option<String>,
     /// CLI endpoint for fallback when host has no stored endpoint.

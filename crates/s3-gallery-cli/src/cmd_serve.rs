@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
+use tower::layer::Layer;
 
 use s3_gallery_core::db::models::HostConfigEntry;
 use s3_gallery_core::db::pool::create_pool;
@@ -11,7 +12,11 @@ use s3_gallery_core::db::status::{check_db_status, decide_action, DbAction};
 use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
+use s3_gallery_core::s3::layers::{LogLayer, TrafficLayer};
 use s3_gallery_core::s3::real::RealS3Client;
+use s3_gallery_core::s3::s3_service::S3Service;
+use s3_gallery_core::s3::traffic_persist::spawn_aggregator;
+use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
 use s3_gallery_core::types::BucketName;
 
 use crate::cli::Cli;
@@ -106,6 +111,24 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
         }
     }
 
+    // Build S3Service stack with logging and traffic layers
+    let core_s3 = S3Service::new(
+        s3_clients
+            .values()
+            .next()
+            .cloned()
+            .ok_or_else(|| S3GalleryError::Internal("no S3 clients available".to_string()))?,
+    );
+
+    // Traffic recorder
+    let recorder = Arc::new(TrafficRecorder::new(pool.clone()));
+    let _agg_handle = spawn_aggregator(recorder.clone(), pool.clone(), 60);
+
+    // Apply layers: LogLayer wraps TrafficLayer, both output S3Service
+    let s3_stack = LogLayer.layer(
+        TrafficLayer::new(recorder.clone(), "serve", "s3_api").layer(core_s3),
+    );
+
     // Register templates from s3-gallery-web
     let mut env = minijinja::Environment::new();
     let errors = s3_gallery_web::register_templates(&mut env);
@@ -123,6 +146,8 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
         db: pool,
         hosts,
         s3_clients,
+        s3_stack,
+        traffic_recorder: Some(recorder),
         prefix,
         cli_endpoint: cli.endpoint.clone(),
         cli_region: cli.region.clone(),
