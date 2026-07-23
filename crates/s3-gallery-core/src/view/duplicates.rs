@@ -5,6 +5,7 @@ use sqlx::SqlitePool;
 use crate::db::models::FileEntry;
 use crate::error::Result;
 use crate::types::FileSize;
+use crate::util::db_helpers::fetch_all_opt;
 
 /// A group of duplicate files.
 #[derive(Debug, Clone)]
@@ -30,32 +31,17 @@ pub async fn find_duplicates(
         etag: String,
     }
 
-    let keys: Vec<DuplicateKey> = if let Some(hid) = host_id {
-        sqlx::query_as(
-            "SELECT size, etag
-             FROM files
-             WHERE host_id = ? AND is_deleted = 0
-             GROUP BY size, etag
-             HAVING COUNT(*) > 1
-             ORDER BY size DESC",
-        )
-        .bind(hid)
-        .fetch_all(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    } else {
-        sqlx::query_as(
-            "SELECT size, etag
-             FROM files
-             WHERE is_deleted = 0
-             GROUP BY size, etag
-             HAVING COUNT(*) > 1
-             ORDER BY size DESC",
-        )
-        .fetch_all(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    };
+    let keys: Vec<DuplicateKey> = fetch_all_opt(
+        db,
+        "SELECT size, etag \
+         FROM files \
+         WHERE host_id = ? AND is_deleted = 0 \
+         GROUP BY size, etag \
+         HAVING COUNT(*) > 1 \
+         ORDER BY size DESC",
+        host_id,
+    )
+    .await?;
 
     let mut result = Vec::new();
 

@@ -8,6 +8,7 @@ use sqlx::SqlitePool;
 use crate::db::models::FileEntry;
 use crate::error::Result;
 use crate::types::FileSize;
+use crate::util::db_helpers::fetch_all_opt;
 
 /// Statistics about files in the database.
 #[derive(Debug, Clone)]
@@ -110,18 +111,12 @@ pub async fn get_stats(db: &SqlitePool, host_id: Option<&str>) -> Result<FileSta
         .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
     };
 
-    let files: Vec<FileEntry> = if let Some(hid) = host_id {
-        sqlx::query_as("SELECT * FROM files WHERE host_id = ? AND is_deleted = 0")
-            .bind(hid)
-            .fetch_all(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    } else {
-        sqlx::query_as("SELECT * FROM files WHERE is_deleted = 0")
-            .fetch_all(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    };
+    let files: Vec<FileEntry> = fetch_all_opt(
+        db,
+        "SELECT * FROM files WHERE host_id = ? AND is_deleted = 0",
+        host_id,
+    )
+    .await?;
 
     for file in files {
         *by_file_type.entry(file.file_type.clone()).or_insert(0) += 1;
