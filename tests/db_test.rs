@@ -148,7 +148,7 @@ async fn test_schema_version_is_set() -> Result<()> {
         .await
         .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
     Ok(())
 }
 
@@ -562,7 +562,7 @@ async fn test_scan_metadata_crud() -> Result<()> {
 
     // Initial state after migration
     let fetched = ScanMetadata::get(&pool, "default").await?;
-    assert_eq!(fetched.db_schema_version, 1);
+    assert_eq!(fetched.db_schema_version, 2);
     assert!(fetched.last_scanned_key.is_none());
 
     // Update
@@ -572,7 +572,7 @@ async fn test_scan_metadata_crud() -> Result<()> {
         last_scanned_at: Some("2026-07-20T00:00:00Z".to_string()),
         total_files: Some(42),
         total_size: Some(1048576),
-        db_schema_version: 1,
+        db_schema_version: 2,
     };
     ScanMetadata::update(&pool, &updated).await?;
 

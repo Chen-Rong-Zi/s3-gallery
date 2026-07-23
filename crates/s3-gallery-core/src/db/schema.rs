@@ -344,10 +344,18 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
 
     // -- Schema version ---------------------------------------------------
 
-    // Set the schema version to 1.  Use INSERT OR IGNORE so that re-running
+    // Set the schema version to 2.  Use INSERT OR IGNORE so that re-running
     // the migration does not fail if a row already exists.
+    // Schema version 2: backfill effective_date for existing files.
     sqlx::query(
-        "INSERT OR IGNORE INTO scan_metadata (host_id, db_schema_version) VALUES ('default', 1);",
+        "UPDATE files SET effective_date = SUBSTR(last_modified, 1, 10) WHERE effective_date = '';",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| S3GalleryError::MigrationError(format!("Failed to backfill effective_date: {e}")))?;
+
+    sqlx::query(
+        "INSERT OR IGNORE INTO scan_metadata (host_id, db_schema_version) VALUES ('default', 2);",
     )
     .execute(pool)
     .await
@@ -495,7 +503,7 @@ mod tests {
                 .await
                 .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
 
         dir.close()
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;

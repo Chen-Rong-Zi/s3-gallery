@@ -1495,7 +1495,7 @@ mod tests {
 
         // The row should exist after migration with default schema version for host 'default'
         let fetched = ScanMetadata::get(&pool, "default").await?;
-        assert_eq!(fetched.db_schema_version, 1);
+        assert_eq!(fetched.db_schema_version, 2);
         assert!(fetched.last_scanned_key.is_none());
 
         // Update
@@ -1505,7 +1505,7 @@ mod tests {
             last_scanned_at: Some("2026-06-01T00:00:00Z".to_string()),
             total_files: Some(100),
             total_size: Some(1048576),
-            db_schema_version: 1,
+            db_schema_version: 2,
         };
         ScanMetadata::update(&pool, &updated).await?;
 
