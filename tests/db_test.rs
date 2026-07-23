@@ -71,6 +71,7 @@ async fn test_schema_migration_creates_all_tables() -> Result<()> {
         "host_config",
         "metadata",
         "scan_metadata",
+        "scan_objects",
         "tags",
         "thumbnails",
         "traffic_file_log",
