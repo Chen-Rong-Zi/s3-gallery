@@ -1,10 +1,10 @@
-use axum::{extract::State, response::IntoResponse, Json};
-use tracing;
+use axum::extract::State;
+use crate::web::handlers::HandlerResult;
 
 use crate::web::state::AppState;
 
 /// Dashboard handler — shows all hosts from the database.
-pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn dashboard(State(state): State<AppState>) -> HandlerResult {
     tracing::info!("dashboard: rendering");
 
     let hosts: Vec<_> = state
@@ -21,7 +21,7 @@ pub async fn dashboard(State(state): State<AppState>) -> impl IntoResponse {
         })
         .collect();
 
-    Json(serde_json::json!({
+    HandlerResult::Json(serde_json::json!({
         "status": "ok",
         "service": "s3-gallery-web",
         "hosts": hosts,

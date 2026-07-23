@@ -1,52 +1,12 @@
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
-    Json,
 };
+use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::view::stat as stat_view;
 use serde_json::json;
 
 use crate::web::state::AppState;
-
-/// Render a minijinja template with the given context.
-///
-/// # Errors
-///
-/// Returns an error response if template lookup or rendering fails.
-fn render_template(
-    state: &AppState,
-    template_name: &str,
-    context: &serde_json::Value,
-) -> Result<Html<String>, Box<Response>> {
-    let template = state.templates.get_template(template_name).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "template not found",
-                    "detail": e.to_string()
-                })),
-            )
-                .into_response(),
-        )
-    })?;
-
-    let html = template.render(context).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "template rendering failed",
-                    "detail": e.to_string()
-                })),
-            )
-                .into_response(),
-        )
-    })?;
-
-    Ok(Html(html))
-}
 
 /// A category count entry for template rendering.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -59,21 +19,20 @@ struct CategoryCount {
 ///
 /// Displays file statistics including total files, total size, and
 /// breakdown by category.
-pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn stats(State(state): State<AppState>) -> HandlerResult {
     tracing::info!(handler = "stats", "computing stats");
 
     let (total_stats, per_host_stats) = match stat_view::get_all_host_stats(&state.db).await {
         Ok(result) => result,
         Err(e) => {
             tracing::error!(handler = "stats", error = %e, "failed to get stats");
-            return (
+            return HandlerResult::Error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
+                json!({
                     "error": "failed to get stats",
                     "detail": e.to_string()
-                })),
-            )
-                .into_response();
+                }),
+            );
         }
     };
 
@@ -121,8 +80,5 @@ pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
         "per_host": per_host_list,
     });
 
-    match render_template(&state, "stats.html", &context) {
-        Ok(html) => html.into_response(),
-        Err(response) => *response,
-    }
+    render_template(&state, "stats.html", &context)
 }

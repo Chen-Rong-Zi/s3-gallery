@@ -1,9 +1,8 @@
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
-    Json,
 };
+use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::view::search as search_view;
 use serde::Deserialize;
 use serde_json::json;
@@ -35,45 +34,6 @@ fn file_entry_to_json(file: &s3_gallery_core::db::models::FileEntry) -> serde_js
     })
 }
 
-/// Render a minijinja template with the given context.
-///
-/// # Errors
-///
-/// Returns an error response if template lookup or rendering fails.
-fn render_template(
-    state: &AppState,
-    template_name: &str,
-    context: &serde_json::Value,
-) -> Result<Html<String>, Box<Response>> {
-    let template = state.templates.get_template(template_name).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "template not found",
-                    "detail": e.to_string()
-                })),
-            )
-                .into_response(),
-        )
-    })?;
-
-    let html = template.render(context).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "template rendering failed",
-                    "detail": e.to_string()
-                })),
-            )
-                .into_response(),
-        )
-    })?;
-
-    Ok(Html(html))
-}
-
 /// Search handler -- renders the search page.
 ///
 /// Query parameters:
@@ -86,7 +46,7 @@ pub async fn search(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<SearchQuery>,
-) -> impl IntoResponse {
+) -> HandlerResult {
     let is_htmx = headers
         .get("HX-Request")
         .and_then(|v| v.to_str().ok())
@@ -105,14 +65,13 @@ pub async fn search(
     {
         Some(h) => h,
         None => {
-            return (
+            return HandlerResult::Error(
                 StatusCode::NOT_FOUND,
-                Json(json!({
+                json!({
                     "error": "no hosts",
                     "detail": "No hosts in database"
-                })),
-            )
-                .into_response();
+                }),
+            );
         }
     };
 
@@ -127,14 +86,13 @@ pub async fn search(
                 Ok(result) => result.files,
                 Err(e) => {
                     tracing::error!(handler = "search", query = %query_trimmed, error = %e, "search by name failed");
-                    return (
+                    return HandlerResult::Error(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({
+                        json!({
                             "error": "search failed",
                             "detail": e.to_string()
-                        })),
-                    )
-                        .into_response();
+                        }),
+                    );
                 }
             }
         }
@@ -147,14 +105,13 @@ pub async fn search(
                 Ok(result) => result.files,
                 Err(e) => {
                     tracing::error!(handler = "search", tag = %tag_trimmed, error = %e, "search by tag failed");
-                    return (
+                    return HandlerResult::Error(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({
+                        json!({
                             "error": "search by tag failed",
                             "detail": e.to_string()
-                        })),
-                    )
-                        .into_response();
+                        }),
+                    );
                 }
             }
         }
@@ -173,8 +130,5 @@ pub async fn search(
         "search.html"
     };
 
-    match render_template(&state, template_name, &context) {
-        Ok(html) => html.into_response(),
-        Err(response) => *response,
-    }
+    render_template(&state, template_name, &context)
 }

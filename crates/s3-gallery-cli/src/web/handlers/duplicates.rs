@@ -1,9 +1,8 @@
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
-    Json,
 };
+use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::view::duplicates as duplicates_view;
 use serde_json::json;
 
@@ -35,64 +34,24 @@ fn duplicate_group_to_json(
     })
 }
 
-/// Render a minijinja template with the given context.
-///
-/// # Errors
-///
-/// Returns an error response if template lookup or rendering fails.
-fn render_template(
-    state: &AppState,
-    template_name: &str,
-    context: &serde_json::Value,
-) -> Result<Html<String>, Box<Response>> {
-    let template = state.templates.get_template(template_name).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "template not found",
-                    "detail": e.to_string()
-                })),
-            )
-                .into_response(),
-        )
-    })?;
-
-    let html = template.render(context).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "template rendering failed",
-                    "detail": e.to_string()
-                })),
-            )
-                .into_response(),
-        )
-    })?;
-
-    Ok(Html(html))
-}
-
 /// Duplicates handler -- renders the duplicates page.
 ///
 /// Displays groups of duplicate files (same size and etag), ordered by
 /// size descending.
-pub async fn duplicates(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn duplicates(State(state): State<AppState>) -> HandlerResult {
     tracing::info!(handler = "duplicates", "finding duplicates");
 
     let duplicate_groups = match duplicates_view::find_duplicates(&state.db, None).await {
         Ok(groups) => groups,
         Err(e) => {
             tracing::error!(handler = "duplicates", error = %e, "failed to find duplicates");
-            return (
+            return HandlerResult::Error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
+                json!({
                     "error": "failed to find duplicates",
                     "detail": e.to_string()
-                })),
-            )
-                .into_response();
+                }),
+            );
         }
     };
 
@@ -105,8 +64,5 @@ pub async fn duplicates(State(state): State<AppState>) -> impl IntoResponse {
 
     let context = json!({ "groups": groups_json });
 
-    match render_template(&state, "duplicates.html", &context) {
-        Ok(html) => html.into_response(),
-        Err(response) => *response,
-    }
+    render_template(&state, "duplicates.html", &context)
 }

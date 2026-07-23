@@ -1,9 +1,8 @@
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
-    Json,
 };
+use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::types::{FileSize, SortField, SortOrder};
 use s3_gallery_core::view::ls;
 use serde::Deserialize;
@@ -113,50 +112,6 @@ fn build_context(
     serde_json::Value::Object(ctx)
 }
 
-/// Render a minijinja template with the given context.
-///
-/// # Errors
-///
-/// Returns an error response if template lookup or rendering fails.
-fn render_template(
-    state: &AppState,
-    template_name: &str,
-    context: &serde_json::Value,
-) -> Result<Html<String>, Box<Response>> {
-    let template = state
-        .templates
-        .get_template(template_name)
-        .map_err(|e| {
-            tracing::error!(handler = "browse", template = %template_name, error = %e, "template not found");
-            Box::new(
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({
-                        "error": "template not found",
-                        "detail": e.to_string()
-                    })),
-                )
-                    .into_response(),
-            )
-        })?;
-
-    let html = template.render(context).map_err(|e| {
-        tracing::error!(handler = "browse", template = %template_name, error = %e, "template rendering failed");
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "template rendering failed",
-                    "detail": e.to_string()
-                })),
-            )
-                .into_response(),
-        )
-    })?;
-
-    Ok(Html(html))
-}
-
 /// Browse handler -- renders the directory listing page.
 ///
 /// Query parameters:
@@ -170,7 +125,7 @@ pub async fn browse(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<BrowseQuery>,
-) -> impl IntoResponse {
+) -> HandlerResult {
     let path = params.path.as_deref().unwrap_or("");
     // Normalize: strip leading slash so "/" and "" both mean "root"
     let path = path.strip_prefix('/').unwrap_or(path);
@@ -230,10 +185,7 @@ pub async fn browse(
         let template_name = "browse.html";
 
         tracing::info!(handler = "browse", path = %path, entries = %entry_views.len(), template = %template_name, "directory listed");
-        return match render_template(&state, template_name, &context) {
-            Ok(html) => html.into_response(),
-            Err(response) => *response,
-        };
+        return render_template(&state, template_name, &context);
     }
 
     // Parse host_id from path (first segment)
@@ -244,14 +196,13 @@ pub async fn browse(
 
     // Validate host_id is known
     if state.get_host(host_id).is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "host not found",
-                "detail": format!("No host: {host_id}")
-            })),
-        )
-            .into_response();
+        return HandlerResult::Error(
+                StatusCode::NOT_FOUND,
+                json!({
+                    "error": "host not found",
+                    "detail": format!("No host: {host_id}")
+                }),
+            );
     }
 
     // Fetch directory listing using ls module directly
@@ -259,14 +210,13 @@ pub async fn browse(
         Ok(entries) => entries,
         Err(e) => {
             tracing::error!(handler = "browse", path = %path, sort_by = %sort_field, error = %e, "failed to list directory");
-            return (
+            return HandlerResult::Error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
+                json!({
                     "error": "failed to list directory",
                     "detail": e.to_string()
-                })),
-            )
-                .into_response();
+                }),
+            );
         }
     };
 
@@ -332,8 +282,5 @@ pub async fn browse(
 
     tracing::info!(handler = "browse", path = %path, entries = %entry_views.len(), template = %template_name, "directory listed");
 
-    match render_template(&state, template_name, &context) {
-        Ok(html) => html.into_response(),
-        Err(response) => *response,
-    }
+    render_template(&state, template_name, &context)
 }

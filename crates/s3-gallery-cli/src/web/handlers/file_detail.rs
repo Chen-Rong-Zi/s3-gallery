@@ -1,9 +1,8 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
-    Json,
 };
+use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::db::models::{FileEntry, MetadataEntry, ThumbnailEntry};
 use s3_gallery_core::error::S3GalleryError;
 use serde_json::json;
@@ -46,45 +45,6 @@ fn file_name_from_key(key: &str) -> String {
     }
 }
 
-/// Render a minijinja template with the given context.
-///
-/// # Errors
-///
-/// Returns an error response if template lookup or rendering fails.
-fn render_template(
-    state: &AppState,
-    template_name: &str,
-    context: &serde_json::Value,
-) -> Result<Html<String>, Box<Response>> {
-    let template = state.templates.get_template(template_name).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "template not found",
-                    "detail": e.to_string()
-                })),
-            )
-                .into_response(),
-        )
-    })?;
-
-    let html = template.render(context).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "error": "template rendering failed",
-                    "detail": e.to_string()
-                })),
-            )
-                .into_response(),
-        )
-    })?;
-
-    Ok(Html(html))
-}
-
 /// File detail handler -- renders the file detail page.
 ///
 /// Route: `/files/{*key}`
@@ -94,34 +54,32 @@ fn render_template(
 pub async fn file_detail(
     State(state): State<AppState>,
     Path(key): Path<String>,
-) -> impl IntoResponse {
+) -> HandlerResult {
     tracing::info!(handler = "file_detail", key = %key, "serving file detail");
 
     // Parse host_id from key (first segment before '/')
     let host_id = match key.find('/') {
         Some(slash) => &key[..slash],
         None => {
-            return (
+            return HandlerResult::Error(
                 StatusCode::BAD_REQUEST,
-                Json(json!({
+                json!({
                     "error": "invalid key",
                     "detail": "Key must contain host_id/"
-                })),
-            )
-                .into_response();
+                }),
+            );
         }
     };
 
     // Validate host is known
     if state.get_host(host_id).is_none() {
-        return (
+        return HandlerResult::Error(
             StatusCode::NOT_FOUND,
-            Json(json!({
+            json!({
                 "error": "host not found",
                 "detail": format!("No host: {host_id}")
-            })),
-        )
-            .into_response();
+            }),
+        );
     }
 
     let pool = &state.db;
@@ -133,25 +91,23 @@ pub async fn file_detail(
             return match e {
                 S3GalleryError::NotFound(_) => {
                     tracing::error!(handler = "file_detail", key = %key, error = %e, "file not found");
-                    (
+                    HandlerResult::Error(
                         StatusCode::NOT_FOUND,
-                        Json(json!({
+                        json!({
                             "error": "file not found",
                             "detail": format!("No file with key: {key}")
-                        })),
+                        }),
                     )
-                        .into_response()
                 }
                 _ => {
                     tracing::error!(handler = "file_detail", key = %key, error = %e, "database error fetching file");
-                    (
+                    HandlerResult::Error(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({
+                        json!({
                             "error": "database error",
                             "detail": e.to_string()
-                        })),
+                        }),
                     )
-                        .into_response()
                 }
             };
         }
@@ -162,14 +118,13 @@ pub async fn file_detail(
         Ok(entries) => entries,
         Err(e) => {
             tracing::error!(handler = "file_detail", key = %key, error = %e, "failed to fetch metadata");
-            return (
+            return HandlerResult::Error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
+                json!({
                     "error": "failed to fetch metadata",
                     "detail": e.to_string()
-                })),
-            )
-                .into_response();
+                }),
+            );
         }
     };
 
@@ -215,8 +170,5 @@ pub async fn file_detail(
         "has_thumbnail": has_thumbnail,
     });
 
-    match render_template(&state, "file_detail.html", &context) {
-        Ok(html) => html.into_response(),
-        Err(response) => *response,
-    }
+    render_template(&state, "file_detail.html", &context)
 }

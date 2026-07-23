@@ -1,9 +1,8 @@
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
-    Json,
 };
+use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::view::timeline_gallery;
 use serde::Deserialize;
 use serde_json::json;
@@ -58,33 +57,6 @@ fn build_context(
     serde_json::Value::Object(ctx)
 }
 
-/// Render a minijinja template with the given context.
-fn render_template(
-    state: &AppState,
-    template_name: &str,
-    context: &serde_json::Value,
-) -> Result<Html<String>, Box<Response>> {
-    let template = state.templates.get_template(template_name).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "template not found", "detail": e.to_string()})),
-            )
-                .into_response(),
-        )
-    })?;
-    let html = template.render(context).map_err(|e| {
-        Box::new(
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "template rendering failed", "detail": e.to_string()})),
-            )
-                .into_response(),
-        )
-    })?;
-    Ok(Html(html))
-}
-
 /// Extract the file name from a key (last segment after '/').
 fn file_name_from_key(key: &str) -> String {
     match key.rsplit('/').next() {
@@ -98,7 +70,7 @@ pub async fn gallery(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<GalleryQuery>,
-) -> impl IntoResponse {
+) -> HandlerResult {
     let page = params.page.unwrap_or(0);
     let tag = params.tag.as_deref();
     let tag = tag.filter(|t| !t.is_empty());
@@ -119,11 +91,10 @@ pub async fn gallery(
         Ok(result) => result,
         Err(e) => {
             tracing::error!(handler = "gallery", error = %e, "failed to get timeline gallery");
-            return (
+            return HandlerResult::Error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "failed to get gallery", "detail": e.to_string()})),
-            )
-                .into_response();
+                json!({"error": "failed to get gallery", "detail": e.to_string()}),
+            );
         }
     };
 
@@ -177,8 +148,5 @@ pub async fn gallery(
         "gallery.html"
     };
 
-    match render_template(&state, template_name, &context) {
-        Ok(html) => html.into_response(),
-        Err(response) => *response,
-    }
+    render_template(&state, template_name, &context)
 }
