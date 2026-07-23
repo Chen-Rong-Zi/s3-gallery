@@ -139,6 +139,21 @@ jobs:
       - name: Generate coverage report
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
 
+      - name: Check coverage threshold
+        run: |
+          cargo llvm-cov --workspace --json > /tmp/cov.json
+          python3 -c "
+import json, sys
+d = json.load(open('/tmp/cov.json'))
+pct = d['data'][0]['totals']['lines']['percent']
+print(f'Coverage: {pct:.2f}%')
+if pct < 50.0:
+    print(f'❌ Coverage {pct:.2f}% is below 50% threshold')
+    sys.exit(1)
+else:
+    print(f'✅ Coverage {pct:.2f}% meets 50% threshold')
+"
+
       - name: Upload to Codecov
         uses: codecov/codecov-action@v5
         with:
