@@ -821,6 +821,130 @@ impl DirSizeEntry {
 }
 
 // ---------------------------------------------------------------------------
+// TrafficLogEntry
+// ---------------------------------------------------------------------------
+
+/// A row in the `traffic_log` table — aggregated traffic records by operation.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct TrafficLogEntry {
+    pub id: i64,
+    pub host_id: String,
+    pub operation: String,
+    pub business: String,
+    pub direction: String,
+    pub bytes: i64,
+    pub count: i64,
+    pub recorded_at: String,
+}
+
+impl TrafficLogEntry {
+    /// Insert a new traffic log entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::DbError` if the database operation fails.
+    pub async fn insert(pool: &SqlitePool, entry: &TrafficLogEntry) -> crate::error::Result<()> {
+        sqlx::query(
+            "INSERT INTO traffic_log (host_id, operation, business, direction, bytes, count, recorded_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&entry.host_id)
+        .bind(&entry.operation)
+        .bind(&entry.business)
+        .bind(&entry.direction)
+        .bind(entry.bytes)
+        .bind(entry.count)
+        .bind(&entry.recorded_at)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::S3GalleryError::DbError(format!("Failed to insert traffic log: {e}")))?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TrafficFileLogEntry
+// ---------------------------------------------------------------------------
+
+/// A row in the `traffic_file_log` table — per-file traffic records.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct TrafficFileLogEntry {
+    pub id: i64,
+    pub host_id: String,
+    pub file_key: String,
+    pub business: String,
+    pub bytes: i64,
+    pub count: i64,
+    pub recorded_at: String,
+}
+
+impl TrafficFileLogEntry {
+    /// Insert a new traffic file log entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::DbError` if the database operation fails.
+    pub async fn insert(pool: &SqlitePool, entry: &TrafficFileLogEntry) -> crate::error::Result<()> {
+        sqlx::query(
+            "INSERT INTO traffic_file_log (host_id, file_key, business, bytes, count, recorded_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&entry.host_id)
+        .bind(&entry.file_key)
+        .bind(&entry.business)
+        .bind(entry.bytes)
+        .bind(entry.count)
+        .bind(&entry.recorded_at)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::S3GalleryError::DbError(format!("Failed to insert traffic file log: {e}")))?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TrafficStatsEntry
+// ---------------------------------------------------------------------------
+
+/// A row in the `traffic_stats` table — rolled-up daily statistics.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct TrafficStatsEntry {
+    pub host_id: String,
+    pub period: String,
+    pub operation: String,
+    pub business: String,
+    pub direction: String,
+    pub total_bytes: i64,
+    pub total_count: i64,
+}
+
+impl TrafficStatsEntry {
+    /// Upsert a traffic stats entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::DbError` if the database operation fails.
+    pub async fn upsert(pool: &SqlitePool, entry: &TrafficStatsEntry) -> crate::error::Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO traffic_stats \
+             (host_id, period, operation, business, direction, total_bytes, total_count) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&entry.host_id)
+        .bind(&entry.period)
+        .bind(&entry.operation)
+        .bind(&entry.business)
+        .bind(&entry.direction)
+        .bind(entry.total_bytes)
+        .bind(entry.total_count)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::S3GalleryError::DbError(format!("Failed to upsert traffic stats: {e}")))?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1390,6 +1514,65 @@ mod tests {
         assert_eq!(fetched.total_files, Some(100));
         assert_eq!(fetched.total_size, Some(1048576));
 
+        Ok(())
+    }
+
+    // -- TrafficLogEntry tests ------------------------------------------------
+
+    #[tokio::test]
+    async fn test_traffic_log_entry_insert() -> crate::error::Result<()> {
+        let (pool, _dir) = setup_test_db().await?;
+
+        let entry = TrafficLogEntry {
+            id: 0,
+            host_id: "test-host".to_string(),
+            operation: "GetObject".to_string(),
+            business: "web_download".to_string(),
+            direction: "download".to_string(),
+            bytes: 1024,
+            count: 1,
+            recorded_at: "2026-07-01T00:00:00Z".to_string(),
+        };
+        TrafficLogEntry::insert(&pool, &entry).await?;
+
+        let results: Vec<TrafficLogEntry> = sqlx::query_as(
+            "SELECT * FROM traffic_log WHERE host_id = ?",
+        )
+        .bind("test-host")
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].bytes, 1024);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_traffic_file_log_entry_insert() -> crate::error::Result<()> {
+        let (pool, _dir) = setup_test_db().await?;
+
+        let entry = TrafficFileLogEntry {
+            id: 0,
+            host_id: "test-host".to_string(),
+            file_key: "photos/img.jpg".to_string(),
+            business: "web_download".to_string(),
+            bytes: 2048,
+            count: 1,
+            recorded_at: "2026-07-01T00:00:00Z".to_string(),
+        };
+        TrafficFileLogEntry::insert(&pool, &entry).await?;
+
+        let results: Vec<TrafficFileLogEntry> = sqlx::query_as(
+            "SELECT * FROM traffic_file_log WHERE host_id = ?",
+        )
+        .bind("test-host")
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].bytes, 2048);
         Ok(())
     }
 }
