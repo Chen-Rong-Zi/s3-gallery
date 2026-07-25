@@ -12,8 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::error::Result;
 use crate::s3::client::{ObjectMetadata, ObjectSummary, S3Client};
-use crate::s3::s3_service::S3Request;
-use crate::types::{BucketName, ObjectKey};
+use crate::types::{BucketName, ObjectKey, S3Operation};
 
 /// A single traffic record — created by BusinessS3Client on successful S3 operations.
 #[derive(Debug, Clone)]
@@ -26,49 +25,6 @@ pub struct TrafficRecord {
     pub direction: String,
     pub bytes: u64,
     pub count: u64,
-}
-
-/// S3Client operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum S3Operation {
-    GetObject = 0,
-    GetObjectRange = 1,
-    PutObject = 2,
-    PutObjectIfNoneMatch = 3,
-    ListObjects = 4,
-    HeadObject = 5,
-    DeleteObject = 6,
-    ObjectExists = 7,
-}
-
-impl S3Operation {
-    pub fn from_request(req: &S3Request) -> Self {
-        match req {
-            S3Request::GetObject(..) => Self::GetObject,
-            S3Request::GetObjectRange(..) => Self::GetObjectRange,
-            S3Request::PutObject(..) => Self::PutObject,
-            S3Request::PutObjectIfNoneMatch(..) => Self::PutObjectIfNoneMatch,
-            S3Request::ListObjects(..) => Self::ListObjects,
-            S3Request::HeadObject(..) => Self::HeadObject,
-            S3Request::DeleteObject(..) => Self::DeleteObject,
-            S3Request::ObjectExists(..) => Self::ObjectExists,
-        }
-    }
-}
-
-impl std::fmt::Display for S3Operation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::GetObject => write!(f, "GetObject"),
-            Self::GetObjectRange => write!(f, "GetObjectRange"),
-            Self::PutObject => write!(f, "PutObject"),
-            Self::PutObjectIfNoneMatch => write!(f, "PutObjectIfNoneMatch"),
-            Self::ListObjects => write!(f, "ListObjects"),
-            Self::HeadObject => write!(f, "HeadObject"),
-            Self::DeleteObject => write!(f, "DeleteObject"),
-            Self::ObjectExists => write!(f, "ObjectExists"),
-        }
-    }
 }
 
 /// TrafficRecorder — fire-and-forget traffic recording via mpsc channel.
@@ -241,32 +197,6 @@ impl S3Client for BusinessS3Client {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_s3_operation_from_request() -> crate::error::Result<()> {
-        use crate::s3::s3_service::S3Request;
-        use crate::types::{BucketName, ObjectKey};
-        let b = BucketName::new("my-bucket")?;
-        let k = ObjectKey::new("k")?;
-
-        assert!(matches!(
-            S3Operation::from_request(&S3Request::GetObject(b.clone(), k.clone())),
-            S3Operation::GetObject
-        ));
-        assert!(matches!(
-            S3Operation::from_request(&S3Request::ListObjects(b.clone(), k.clone())),
-            S3Operation::ListObjects
-        ));
-        assert!(matches!(
-            S3Operation::from_request(&S3Request::ObjectExists(b.clone(), k.clone())),
-            S3Operation::ObjectExists
-        ));
-        assert!(matches!(
-            S3Operation::from_request(&S3Request::DeleteObject(b.clone(), k.clone())),
-            S3Operation::DeleteObject
-        ));
-        Ok(())
-    }
 
     use std::sync::Arc;
 

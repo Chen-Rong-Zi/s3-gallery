@@ -277,7 +277,8 @@ mod tests {
     use super::*;
     use crate::db::pool::create_pool;
     use crate::db::schema::run_migrations;
-    use crate::s3::traffic_recorder::{S3Operation, TrafficRecord};
+    use crate::s3::traffic_recorder::TrafficRecord;
+    use crate::types::S3Operation;
     use tempfile::tempdir;
 
     #[tokio::test]

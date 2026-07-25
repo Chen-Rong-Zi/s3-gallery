@@ -26,12 +26,6 @@ pub enum Relation {
         to = "super::host_config::Column::HostId"
     )]
     HostConfig,
-    #[sea_orm(has_many = "super::file_tag::Entity")]
-    FileTags,
-    #[sea_orm(has_many = "super::metadata::Entity")]
-    Metadata,
-    #[sea_orm(has_many = "super::scan_object::Entity")]
-    ScanObjects,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
