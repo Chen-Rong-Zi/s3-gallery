@@ -134,7 +134,7 @@ async fn setup_scan_fixture(
         client_id: "e2e-cli-test".to_string(),
     };
 
-    let result = run_scan(scan_config).await?;
+    let result = run_scan(scan_config, String::new()).await?;
     assert_eq!(result.total_files, 4, "should find all 4 test files");
     assert_eq!(result.new_files, 4);
 

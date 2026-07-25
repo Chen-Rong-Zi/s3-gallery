@@ -73,7 +73,7 @@ async fn test_scan_empty_bucket() -> Result<()> {
     let bucket = common::test_bucket()?;
 
     let config = make_scan_config(s3, pool, bucket, "test");
-    let result = run_scan(config).await?;
+    let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 0);
     assert_eq!(result.new_files, 0);
@@ -137,7 +137,7 @@ async fn test_scan_detects_modified_objects() -> Result<()> {
     // a different etag than what's in the DB, triggering a "changed" detection.
     let s3 = mock_s3_with_fixtures(vec![("test/photos/img001.jpg", b"updated jpeg data")])?;
     let config = make_scan_config(Arc::new(s3), pool.clone(), bucket, "");
-    let result = run_scan(config).await?;
+    let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 1);
     assert_eq!(result.new_files, 0);
@@ -179,7 +179,7 @@ async fn test_scan_detects_deleted_objects() -> Result<()> {
 
     let s3 = mock_s3_with_fixtures(vec![])?; // empty — no objects
     let config = make_scan_config(Arc::new(s3), pool.clone(), bucket, "");
-    let result = run_scan(config).await?;
+    let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 0);
     assert_eq!(result.new_files, 0);
@@ -253,7 +253,7 @@ async fn test_scan_mixed_new_changed_deleted() -> Result<()> {
         ("test/new.txt", b"new data"),
     ])?;
     let config = make_scan_config(Arc::new(s3), pool.clone(), bucket, "");
-    let result = run_scan(config).await?;
+    let result = run_scan(config, String::new()).await?;
 
     // At minimum we should see:
     assert_eq!(result.total_files, 3, "3 objects in S3");
@@ -277,7 +277,7 @@ async fn test_scan_updates_scan_metadata() -> Result<()> {
     let s3 = mock_s3_with_fixtures(vec![("test/a.jpg", b"data"), ("test/b.jpg", b"data")])?;
 
     let config = make_scan_config(Arc::new(s3), pool.clone(), common::test_bucket()?, "");
-    let result = run_scan(config).await?;
+    let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 2);
     assert_eq!(result.total_size, 8); // 2 * b"data".len()
@@ -293,7 +293,7 @@ async fn test_scan_skips_s3_gallery_directory() -> Result<()> {
     ])?;
 
     let config = make_scan_config(Arc::new(s3), pool.clone(), common::test_bucket()?, "");
-    let result = run_scan(config).await?;
+    let result = run_scan(config, String::new()).await?;
 
     // Only the non-.s3-gallery file should be counted.
     assert_eq!(

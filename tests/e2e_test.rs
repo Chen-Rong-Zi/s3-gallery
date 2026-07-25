@@ -305,7 +305,7 @@ async fn e2e_scan_real_bucket() -> Result<()> {
         client_id: "e2e-test-client".to_string(),
     };
 
-    let result = run_scan(scan_config).await?;
+    let result = run_scan(scan_config, String::new()).await?;
     assert_eq!(result.total_files, 1, "should find the test object");
     assert_eq!(result.new_files, 1);
 

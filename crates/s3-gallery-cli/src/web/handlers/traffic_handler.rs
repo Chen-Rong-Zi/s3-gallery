@@ -51,30 +51,52 @@ pub async fn traffic(
 }
 
 /// Live traffic JSON endpoint — polled by HTMX every 5 seconds.
+///
+/// Returns per-business download rates and total requests.
 pub async fn traffic_live(
     State(state): State<AppState>,
 ) -> HandlerResult {
-    let row: Result<(i64, i64), _> = sqlx::query_as(
-        "SELECT COALESCE(SUM(bytes), 0), COALESCE(SUM(count), 0) \
-         FROM traffic_log WHERE recorded_at > datetime('now', '-10 seconds')",
+    // Per-business breakdown for last 10 seconds
+    let rows: Vec<(String, i64, i64)> = match sqlx::query_as(
+        "SELECT business, COALESCE(SUM(bytes), 0), COALESCE(SUM(count), 0) \
+         FROM traffic_log \
+         WHERE recorded_at > datetime('now', '-10 seconds') \
+         GROUP BY business",
     )
-    .fetch_one(&state.db)
-    .await;
-
-    match row {
-        Ok((bytes, count)) => {
-            let rate = bytes as f64 / 10.0;
-            HandlerResult::Json(json!({
-                "download_bytes_per_sec": rate,
-                "download_kbps": format!("{:.1}", rate / 1024.0),
-                "requests_per_sec": count as f64 / 10.0,
-            }))
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            return HandlerResult::Error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({"error": "failed to read live traffic", "detail": e.to_string()}),
+            );
         }
-        Err(e) => HandlerResult::Error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({"error": "failed to read live traffic", "detail": e.to_string()}),
-        ),
+    };
+
+    let mut businesses = serde_json::Map::new();
+    let mut total_download_bytes: f64 = 0.0;
+    let mut total_requests: i64 = 0;
+
+    for (business, bytes, count) in &rows {
+        let kbps = *bytes as f64 / 1024.0 / 10.0;
+        businesses.insert(
+            business.clone(),
+            json!({
+                "download_kbps": format!("{:.1}", kbps),
+                "requests": count,
+            }),
+        );
+        total_download_bytes += kbps;
+        total_requests += count;
     }
+
+    HandlerResult::Json(json!({
+        "businesses": businesses,
+        "total_download_kbps": format!("{:.1}", total_download_bytes),
+        "total_requests": total_requests,
+    }))
 }
 
 /// Traffic history JSON endpoint.
