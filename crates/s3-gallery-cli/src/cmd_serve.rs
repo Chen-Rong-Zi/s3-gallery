@@ -13,8 +13,8 @@ use s3_gallery_core::s3::config::OssConfig;
 use s3_gallery_core::s3::layers::LogLayer;
 use s3_gallery_core::s3::real::RealS3Client;
 use s3_gallery_core::s3::s3_service::S3Service;
-use s3_gallery_core::s3::traffic_persist::spawn_aggregator;
-use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
+use s3_gallery_core::s3::traffic_persist::spawn_batch_writer;
+use s3_gallery_core::s3::traffic_recorder::{TrafficRecord, TrafficRecorder};
 use s3_gallery_core::types::BucketName;
 
 use crate::cli::Cli;
@@ -105,9 +105,10 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
     )?;
     let core_s3 = S3Service::new(Arc::new(RealS3Client::from_config(&config)));
 
-    // Traffic recorder
-    let recorder = Arc::new(TrafficRecorder::new(pool.clone()));
-    let _agg_handle = spawn_aggregator(recorder.clone(), pool.clone(), 60);
+    // Traffic recorder with channel-based batch writer
+    let (tx, _rx) = tokio::sync::mpsc::channel::<TrafficRecord>(4096);
+    let recorder = Arc::new(TrafficRecorder::new(tx));
+    let _agg_handle = spawn_batch_writer(pool.clone(), 60, 100);
 
     // Apply layers: LogLayer wraps core_s3
     let s3_stack = LogLayer.layer(core_s3);

@@ -39,6 +39,7 @@ impl Layer<S3Service> for DiscoverLayer {
         let db = self.db.clone();
         BoxService::new(service_fn(move |req: ScanRequest| {
             let db = db.clone();
+            let endpoint = req.endpoint;
             let bucket = req.bucket;
             let scope_prefix = req.scope_prefix;
             let mut s3 = inner.clone();
@@ -68,8 +69,10 @@ impl Layer<S3Service> for DiscoverLayer {
                     HostConfigEntry::upsert_host_config(
                         &db,
                         &host.host_id,
+                        &host.host_name,
+                        &host.host_type,
                         bucket.as_str(),
-                        "",
+                        &endpoint,
                         "",
                     )
                     .await?;
@@ -122,8 +125,10 @@ impl Layer<S3Service> for DiscoverLayer {
                             HostConfigEntry::upsert_host_config(
                                 &db,
                                 &host.host_id,
+                                &host.host_name,
+                                &host.host_type,
                                 bucket.as_str(),
-                                "",
+                                &endpoint,
                                 "",
                             )
                             .await?;
@@ -142,8 +147,10 @@ impl Layer<S3Service> for DiscoverLayer {
                             HostConfigEntry::upsert_host_config(
                                 &db,
                                 dir,
+                                "unkown",
+                                "unkown",
                                 bucket.as_str(),
-                                "",
+                                &endpoint,
                                 "",
                             )
                             .await?;
@@ -227,6 +234,7 @@ mod tests {
             extract_metadata: false,
             generate_thumbnails: false,
             client_id: "test".to_string(),
+            endpoint: String::new(),
         };
 
         let resp = Service::call(&mut discover, req).await?;

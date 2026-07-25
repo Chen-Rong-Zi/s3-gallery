@@ -120,16 +120,20 @@ impl HostConfigEntry {
     pub async fn upsert_host_config(
         pool: &SqlitePool,
         host_id: &str,
+        host_name: &str,
+        host_type: &str,
         bucket: &str,
         endpoint: &str,
         region: &str,
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO host_config (host_id, host_name, host_type, description, created_at, bucket, endpoint, region) \
-             VALUES (?, 'unknown', 'unknown', '', datetime('now'), ?, ?, ?) \
+             VALUES (?, ?, ?, '', datetime('now'), ?, ?, ?) \
              ON CONFLICT(host_id) DO UPDATE SET bucket = excluded.bucket, endpoint = excluded.endpoint, region = excluded.region"
         )
         .bind(host_id)
+        .bind(host_name)
+        .bind(host_type)
         .bind(bucket)
         .bind(endpoint)
         .bind(region)
@@ -1025,6 +1029,8 @@ mod tests {
         HostConfigEntry::upsert_host_config(
             &pool,
             "camera-1",
+            "Camera 1",
+            "camera",
             "photos-bucket",
             "https://oss.example.com",
             "us-east-1",
@@ -1039,6 +1045,8 @@ mod tests {
         HostConfigEntry::upsert_host_config(
             &pool,
             "camera-1",
+            "Camera 1",
+            "camera",
             "new-bucket",
             "https://oss2.example.com",
             "eu-west-1",
@@ -1064,6 +1072,8 @@ mod tests {
         HostConfigEntry::upsert_host_config(
             &pool,
             "host-a",
+            "Host A",
+            "web",
             "bucket-a",
             "https://endpoint-a",
             "us-east-1",
@@ -1072,6 +1082,8 @@ mod tests {
         HostConfigEntry::upsert_host_config(
             &pool,
             "host-b",
+            "Host B",
+            "web",
             "bucket-b",
             "https://endpoint-b",
             "eu-west-1",

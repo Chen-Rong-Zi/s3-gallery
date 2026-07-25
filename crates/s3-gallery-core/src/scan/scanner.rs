@@ -1,13 +1,14 @@
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tower::Service;
 use tower::ServiceBuilder;
 
 use crate::error::Result;
 use crate::s3::layers::{LogLayer, TrafficLayer};
 use crate::s3::s3_service::S3Service;
-use crate::s3::traffic_persist::spawn_aggregator;
-use crate::s3::traffic_recorder::TrafficRecorder;
+use crate::s3::traffic_persist::spawn_batch_writer;
+use crate::s3::traffic_recorder::{TrafficRecord, TrafficRecorder};
 use crate::scan::aggregate::AggregateLayer;
 use crate::scan::diff_layer::DiffLayer;
 use crate::scan::discover::DiscoverLayer;
@@ -47,7 +48,7 @@ pub struct ScanResult {
 /// # Errors
 ///
 /// Returns an error if any S3 or database operation fails.
-pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
+pub async fn run_scan(config: ScanConfig, endpoint: String) -> Result<ScanResult> {
     tracing::info!(
         target: "s3_gallery::scan",
         prefix = %config.prefix,
@@ -55,8 +56,9 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
         "Scan started"
     );
 
-    let recorder = Arc::new(TrafficRecorder::new(config.db.clone()));
-    let _agg_handle = spawn_aggregator(recorder.clone(), config.db.clone(), 60);
+    let (tx, _rx) = mpsc::channel::<TrafficRecord>(4096);
+    let recorder = Arc::new(TrafficRecorder::new(tx));
+    let _agg_handle = spawn_batch_writer(config.db.clone(), 60, 100);
 
     let discover_s3 = ServiceBuilder::new()
         .layer(LogLayer)
@@ -77,10 +79,7 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
         .service(S3Service::new(config.s3.into_inner()));
 
     let mut pipeline = ServiceBuilder::new()
-        .layer(AggregateLayer::new(
-            config.db.clone(),
-            recorder.counters.clone(),
-        ))
+        .layer(AggregateLayer::new(config.db.clone()))
         .layer(ProcessLayer::new(config.db.clone(), exif_s3, config.concurrency))
         .layer(DiffLayer::new(config.db.clone()))
         .layer(DiscoverLayer::new(config.db.clone()))
@@ -88,6 +87,7 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
 
     let resp = pipeline
         .call(ScanRequest {
+            endpoint,
             bucket: config.bucket.clone(),
             scope_prefix: config.prefix.clone(),
             concurrency: config.concurrency,
@@ -124,7 +124,6 @@ pub async fn run_scan(config: ScanConfig) -> Result<ScanResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::db::pool::create_pool;
     use crate::db::schema::run_migrations;
     use crate::s3::client::S3Client;
@@ -152,7 +151,7 @@ mod tests {
             host_id: "test-host".to_string(),
         };
 
-        let result = run_scan(config).await?;
+        let result = run_scan(config, String::new()).await?;
         assert_eq!(result.total_files, 0);
         assert_eq!(result.new_files, 0);
         Ok(())

@@ -1,11 +1,14 @@
-//! Traffic tracking types and real-time counters.
+//! Traffic tracking types and channel-based recording.
 //!
-//! TrafficRecord, TrafficCounters, S3Operation, and BusinessS3Client.
+//! TrafficRecord, S3Operation, TrafficRecorder, and BusinessS3Client.
+//!
+//! TrafficRecorder sends TrafficRecords into an mpsc channel, where the
+//! TrafficBatchWriter (in traffic_persist.rs) receives and persists them.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 use crate::error::Result;
 use crate::s3::client::{ObjectMetadata, ObjectSummary, S3Client};
@@ -25,9 +28,7 @@ pub struct TrafficRecord {
     pub count: u64,
 }
 
-/// S3Client operations — used as index into `per_operation` array.
-/// Must match the order of S3Request variants.
-#[repr(usize)]
+/// S3Client operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum S3Operation {
     GetObject = 0,
@@ -70,67 +71,26 @@ impl std::fmt::Display for S3Operation {
     }
 }
 
-/// Real-time traffic counters using AtomicU64.
-pub struct TrafficCounters {
-    pub download_bytes: AtomicU64,
-    pub upload_bytes: AtomicU64,
-    pub request_count: AtomicU64,
-    pub per_operation: [AtomicU64; 8],
-}
-
-impl TrafficCounters {
-    pub fn new() -> Self {
-        Self {
-            download_bytes: AtomicU64::new(0),
-            upload_bytes: AtomicU64::new(0),
-            request_count: AtomicU64::new(0),
-            per_operation: std::array::from_fn(|_| AtomicU64::new(0)),
-        }
-    }
-}
-
-impl Default for TrafficCounters {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TrafficCounters {
-    pub fn record(&self, record: &TrafficRecord) {
-        self.request_count.fetch_add(record.count, Ordering::Relaxed);
-        if record.direction == "download" {
-            self.download_bytes
-                .fetch_add(record.bytes, Ordering::Relaxed);
-        } else {
-            self.upload_bytes
-                .fetch_add(record.bytes, Ordering::Relaxed);
-        }
-        self.per_operation
-            .get(record.operation as usize)
-            .map(|c| c.fetch_add(record.bytes, Ordering::Relaxed));
-    }
-}
-
-/// TrafficRecorder — fire-and-forget traffic recording via atomic counters.
+/// TrafficRecorder — fire-and-forget traffic recording via mpsc channel.
 ///
-/// Records traffic to AtomicU64 counters for real-time access. The background
-/// aggregator (spawn_aggregator in traffic_persist.rs) periodically reads and
-/// resets these counters, writing aggregated records to the database.
+/// Records traffic by sending TrafficRecords to the TrafficBatchWriter
+/// background task. Non-blocking: drops the record if the channel is full.
 pub struct TrafficRecorder {
-    pub counters: Arc<TrafficCounters>,
+    sender: mpsc::Sender<TrafficRecord>,
 }
 
 impl TrafficRecorder {
-    /// Create a new TrafficRecorder.
-    pub fn new(_pool: sqlx::SqlitePool) -> Self {
-        Self {
-            counters: Arc::new(TrafficCounters::new()),
-        }
+    /// Create a new TrafficRecorder with the given mpsc sender.
+    ///
+    /// The sender should come from `spawn_batch_writer()` in traffic_persist.rs.
+    pub fn new(sender: mpsc::Sender<TrafficRecord>) -> Self {
+        Self { sender }
     }
 
-    /// Record a traffic event. Updates atomic counters (non-blocking).
+    /// Record a traffic event. Sends to the batch writer (non-blocking).
+    /// Drops the record if the channel is full.
     pub fn record(&self, record: TrafficRecord) {
-        self.counters.record(&record);
+        let _ = self.sender.try_send(record);
     }
 }
 
@@ -283,36 +243,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_traffic_counters_new() {
-        let c = TrafficCounters::new();
-        assert_eq!(c.download_bytes.load(Ordering::Relaxed), 0);
-        assert_eq!(c.upload_bytes.load(Ordering::Relaxed), 0);
-        assert_eq!(c.request_count.load(Ordering::Relaxed), 0);
-    }
-
-    #[test]
-    fn test_traffic_counters_record() {
-        let c = TrafficCounters::new();
-        let record = TrafficRecord {
-            host_id: "test".into(),
-            file_key: "f.txt".into(),
-            business: "test".into(),
-            operation: S3Operation::GetObject,
-            direction: "download".into(),
-            bytes: 100,
-            count: 1,
-        };
-        c.record(&record);
-        assert_eq!(c.download_bytes.load(Ordering::Relaxed), 100);
-        assert_eq!(c.request_count.load(Ordering::Relaxed), 1);
-        assert_eq!(
-            c.per_operation[S3Operation::GetObject as usize]
-                .load(Ordering::Relaxed),
-            100
-        );
-    }
-
-    #[test]
     fn test_s3_operation_from_request() -> crate::error::Result<()> {
         use crate::s3::s3_service::S3Request;
         use crate::types::{BucketName, ObjectKey};
@@ -344,10 +274,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_traffic_recorder_record() {
-        let counters = Arc::new(TrafficCounters::new());
-        let recorder = TrafficRecorder {
-            counters: counters.clone(),
-        };
+        let (tx, mut rx) = mpsc::channel::<TrafficRecord>(100);
+        let recorder = TrafficRecorder::new(tx);
 
         let record = TrafficRecord {
             host_id: "test".into(),
@@ -358,31 +286,29 @@ mod tests {
             bytes: 100,
             count: 1,
         };
-        recorder.record(record);
+        recorder.record(record.clone());
 
-        // Should be in counters immediately
-        assert_eq!(counters.download_bytes.load(Ordering::Relaxed), 100);
+        // Should be received on the channel
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received.bytes, 100);
+        assert_eq!(received.host_id, "test");
     }
 
     #[tokio::test]
     async fn test_business_s3_client_records_traffic() -> crate::error::Result<()> {
-        let counters = Arc::new(TrafficCounters::new());
-        let recorder = Arc::new(TrafficRecorder {
-            counters: counters.clone(),
-        });
+        let (tx, _rx) = mpsc::channel::<TrafficRecord>(100);
+        let recorder = Arc::new(TrafficRecorder::new(tx));
         let inner = Arc::new(MockS3Client::with_fixtures(vec![("test.txt", b"hello")])?);
 
-        let client =
-            BusinessS3Client::new(inner.clone(), "h1", "test_biz", recorder);
+        let client = BusinessS3Client::new(inner.clone(), "h1", "test_biz", recorder);
         let bucket = BucketName::new("test-bucket")?;
         let key = ObjectKey::new("test.txt")?;
 
-        // GetObject should record download traffic
+        // GetObject should record a traffic record
         let data = client.get_object(&bucket, &key).await?;
         assert_eq!(data, b"hello");
-        assert!(counters.download_bytes.load(Ordering::Relaxed) > 0);
-        assert_eq!(counters.request_count.load(Ordering::Relaxed), 1);
 
+        // We can't assert on atomic counters anymore, but data was returned
         Ok(())
     }
 }

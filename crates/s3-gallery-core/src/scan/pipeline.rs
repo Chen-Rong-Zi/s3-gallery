@@ -9,6 +9,7 @@ use crate::types::ObjectKey;
 /// Request — same for all pipeline layers.
 #[derive(Debug, Clone)]
 pub struct ScanRequest {
+    pub endpoint: String,
     pub bucket: crate::types::BucketName,
     pub scope_prefix: ObjectKey,
     pub concurrency: usize,

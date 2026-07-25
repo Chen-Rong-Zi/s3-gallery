@@ -35,7 +35,7 @@ impl RealS3Client {
             .region(aws_sdk_s3::config::Region::new(config.region.clone()))
             .endpoint_url(&config.endpoint)
             .credentials_provider(creds)
-            .force_path_style(true)
+            // .force_path_style(true)
             .build();
 
         let client = aws_sdk_s3::Client::from_conf(s3_config);

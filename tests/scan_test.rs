@@ -93,7 +93,7 @@ async fn test_scan_discovers_new_objects() -> Result<()> {
     let bucket = common::test_bucket()?;
 
     let config = make_scan_config(Arc::new(s3), pool.clone(), bucket, "");
-    let result = run_scan(config).await?;
+    let result = run_scan(config, "".to_owned()).await?;
 
     assert_eq!(result.total_files, 3, "should discover 3 objects");
     assert_eq!(result.new_files, 3, "all 3 should be new");
