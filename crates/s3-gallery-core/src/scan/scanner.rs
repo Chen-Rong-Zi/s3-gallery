@@ -1,6 +1,5 @@
 use sqlx::SqlitePool;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tower::Service;
 use tower::ServiceBuilder;
 
@@ -8,7 +7,7 @@ use crate::error::Result;
 use crate::s3::layers::{LogLayer, TrafficLayer};
 use crate::s3::s3_service::S3Service;
 use crate::s3::traffic_persist::spawn_batch_writer;
-use crate::s3::traffic_recorder::{TrafficRecord, TrafficRecorder};
+use crate::s3::traffic_recorder::TrafficRecorder;
 use crate::scan::aggregate::AggregateLayer;
 use crate::scan::diff_layer::DiffLayer;
 use crate::scan::discover::DiscoverLayer;
@@ -56,9 +55,8 @@ pub async fn run_scan(config: ScanConfig, endpoint: String) -> Result<ScanResult
         "Scan started"
     );
 
-    let (tx, _rx) = mpsc::channel::<TrafficRecord>(4096);
+    let tx = spawn_batch_writer(config.db.clone(), 60, 100);
     let recorder = Arc::new(TrafficRecorder::new(tx));
-    let _agg_handle = spawn_batch_writer(config.db.clone(), 60, 100);
 
     let discover_s3 = ServiceBuilder::new()
         .layer(LogLayer)

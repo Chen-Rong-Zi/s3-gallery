@@ -13,7 +13,7 @@ use s3_gallery_core::s3::layers::{LogLayer, TrafficLayer};
 use s3_gallery_core::s3::real::RealS3Client;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::s3::traffic_persist::spawn_batch_writer;
-use s3_gallery_core::s3::traffic_recorder::{TrafficRecord, TrafficRecorder};
+use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
 use s3_gallery_core::scan::aggregate::AggregateLayer;
 use s3_gallery_core::scan::diff_layer::DiffLayer;
 use s3_gallery_core::scan::discover::DiscoverLayer;
@@ -139,9 +139,8 @@ async fn run_scan_core(
     let db_path = &cli.db_path;
 
     // Set up traffic tracking with channel-based batch writer
-    let (tx, _rx) = tokio::sync::mpsc::channel::<TrafficRecord>(4096);
+    let tx = spawn_batch_writer(pool.clone(), 60, 100);
     let recorder = Arc::new(TrafficRecorder::new(tx));
-    let _agg_handle = spawn_batch_writer(pool.clone(), 60, 100);
 
     // Build discover_s3 with LogLayer + TrafficLayer for "scan_discover"
     let discover_core = S3Service::new(s3.clone());
