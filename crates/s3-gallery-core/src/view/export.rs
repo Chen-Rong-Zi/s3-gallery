@@ -104,15 +104,17 @@ mod tests {
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool();
+        run_migrations(pool).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
         FileEntry::upsert(
             pool,
             &FileEntry {
@@ -152,10 +154,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_export_csv() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let csv = export_files(&pool, "test-host", ExportFormat::Csv).await?;
+        let csv = export_files(&db, "test-host", ExportFormat::Csv).await?;
         assert!(csv.contains("photo001.jpg"));
         assert!(csv.contains("video.mp4"));
 
@@ -164,10 +166,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_export_json() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let json = export_files(&pool, "test-host", ExportFormat::Json).await?;
+        let json = export_files(&db, "test-host", ExportFormat::Json).await?;
         assert!(json.contains("photo001.jpg"));
         assert!(json.contains("video.mp4"));
 

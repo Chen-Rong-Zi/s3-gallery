@@ -158,15 +158,17 @@ mod tests {
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool();
+        run_migrations(pool).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
         FileEntry::upsert(
             pool,
             &FileEntry {
@@ -240,10 +242,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_stats() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let stats = get_stats(&pool, Some("test-host")).await?;
+        let stats = get_stats(&db, Some("test-host")).await?;
 
         assert_eq!(stats.total_files, 3);
         assert_eq!(stats.total_size.as_u64(), 1024 + 2048 + 50000);
@@ -263,9 +265,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_stats_empty() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
+        let (db, _dir) = setup_test_db().await?;
 
-        let stats = get_stats(&pool, Some("test-host")).await?;
+        let stats = get_stats(&db, Some("test-host")).await?;
 
         assert_eq!(stats.total_files, 0);
         assert_eq!(stats.total_size.as_u64(), 0);
@@ -278,10 +280,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_all_host_stats() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let (total, per_host) = get_all_host_stats(&pool).await?;
+        let (total, per_host) = get_all_host_stats(&db).await?;
 
         assert_eq!(total.total_files, 3);
         assert_eq!(total.deleted_files, 1);

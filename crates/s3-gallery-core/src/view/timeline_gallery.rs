@@ -2,17 +2,16 @@
 
 use std::collections::BTreeMap;
 
-use sqlx::SqlitePool;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
 
-use crate::db::models::FileEntry;
+use crate::entity::{file, file_tag, tag};
 use crate::error::{Result, S3GalleryError};
-use crate::util::db_helpers::fetch_all_opt;
 
 /// A timeline entry containing files from a specific date.
 #[derive(Debug, Clone)]
 pub struct TimelineEntry {
     pub date: String,
-    pub files: Vec<FileEntry>,
+    pub files: Vec<file::Model>,
     pub count: u64,
 }
 
@@ -24,55 +23,47 @@ pub struct TimelineEntry {
 ///
 /// Returns an error if the database query fails.
 pub async fn get_timeline_gallery(
-    db: &SqlitePool,
+    db: &DatabaseConnection,
     host_id: Option<&str>,
     page: u32,
     page_size: u32,
     tag: Option<&str>,
 ) -> Result<(Vec<TimelineEntry>, bool)> {
     // Build the query with optional host_id and tag filters
-    let files: Vec<FileEntry> = if let Some(tag_name) = tag {
+    let files: Vec<file::Model> = if let Some(tag_name) = tag {
         if tag_name.is_empty() {
             return Ok((Vec::new(), false));
         }
+        let mut query = file::Entity::find()
+            .join_rev(JoinType::InnerJoin, file_tag::Relation::File.def())
+            .join(JoinType::InnerJoin, file_tag::Relation::Tag.def())
+            .filter(tag::Column::TagName.eq(tag_name))
+            .filter(file::Column::IsDeleted.eq(false));
+
         if let Some(hid) = host_id {
-            sqlx::query_as(
-                "SELECT f.* FROM files f \
-                 INNER JOIN file_tags ft ON f.key = ft.file_key \
-                 INNER JOIN tags t ON ft.tag_id = t.tag_id \
-                 WHERE t.tag_name = ? AND f.host_id = ? AND f.is_deleted = 0 \
-                 ORDER BY f.effective_date DESC, f.last_modified DESC",
-            )
-            .bind(tag_name)
-            .bind(hid)
-            .fetch_all(db)
-            .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
-        } else {
-            sqlx::query_as(
-                "SELECT f.* FROM files f \
-                 INNER JOIN file_tags ft ON f.key = ft.file_key \
-                 INNER JOIN tags t ON ft.tag_id = t.tag_id \
-                 WHERE t.tag_name = ? AND f.is_deleted = 0 \
-                 ORDER BY f.effective_date DESC, f.last_modified DESC",
-            )
-            .bind(tag_name)
-            .fetch_all(db)
-            .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+            query = query.filter(file::Column::HostId.eq(hid));
         }
+
+        query
+            .all(db)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
     } else {
-        fetch_all_opt::<FileEntry>(
-            db,
-            "SELECT * FROM files WHERE host_id = ? AND is_deleted = 0 \
-             ORDER BY effective_date DESC, last_modified DESC",
-            host_id,
-        )
-        .await?
+        let mut query = file::Entity::find()
+            .filter(file::Column::IsDeleted.eq(false));
+
+        if let Some(hid) = host_id {
+            query = query.filter(file::Column::HostId.eq(hid));
+        }
+
+        query
+            .all(db)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
     };
 
     // Group by date (effective_date or last_modified)
-    let mut grouped: BTreeMap<String, Vec<FileEntry>> = BTreeMap::new();
+    let mut grouped: BTreeMap<String, Vec<file::Model>> = BTreeMap::new();
     for file in files {
         let date = if file.effective_date.is_empty() {
             extract_date(&file.last_modified)
@@ -117,20 +108,23 @@ fn extract_date(timestamp: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::models::FileEntry;
     use crate::db::pool::create_pool;
     use crate::db::schema::run_migrations;
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool();
+        run_migrations(pool).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
         FileEntry::upsert(
             pool,
             &FileEntry {
@@ -200,10 +194,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_timeline_gallery_basic() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let (entries, has_more) = get_timeline_gallery(&pool, None, 0, 10, None).await?;
+        let (entries, has_more) = get_timeline_gallery(&db, None, 0, 10, None).await?;
         assert_eq!(entries.len(), 2);
         assert!(!has_more);
         assert_eq!(entries[0].date, "2024-02-20");
@@ -215,15 +209,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_timeline_gallery_pagination() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let (entries, has_more) = get_timeline_gallery(&pool, None, 0, 1, None).await?;
+        let (entries, has_more) = get_timeline_gallery(&db, None, 0, 1, None).await?;
         assert_eq!(entries.len(), 1);
         assert!(has_more);
         assert_eq!(entries[0].date, "2024-02-20");
 
-        let (entries, has_more) = get_timeline_gallery(&pool, None, 1, 1, None).await?;
+        let (entries, has_more) = get_timeline_gallery(&db, None, 1, 1, None).await?;
         assert_eq!(entries.len(), 1);
         assert!(!has_more);
         assert_eq!(entries[0].date, "2024-01-15");
@@ -232,8 +226,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_timeline_gallery_empty() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        let (entries, has_more) = get_timeline_gallery(&pool, None, 0, 10, None).await?;
+        let (db, _dir) = setup_test_db().await?;
+        let (entries, has_more) = get_timeline_gallery(&db, None, 0, 10, None).await?;
         assert!(entries.is_empty());
         assert!(!has_more);
         Ok(())

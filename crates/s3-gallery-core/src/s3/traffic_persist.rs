@@ -285,7 +285,8 @@ mod tests {
     async fn test_flush_batch_writes_to_db() -> crate::error::Result<()> {
         let dir = tempdir().map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool().clone();
         run_migrations(&pool).await?;
 
         let records = vec![
@@ -358,7 +359,8 @@ mod tests {
     async fn test_spawn_batch_writer_sends_records() -> crate::error::Result<()> {
         let dir = tempdir().map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool().clone();
         run_migrations(&pool).await?;
 
         let handle = spawn_batch_writer(pool.clone(), 1, 100); // flush every 1s

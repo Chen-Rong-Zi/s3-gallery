@@ -1,8 +1,8 @@
 //! Find duplicate files.
 
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
+use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder};
 
-use crate::db::models::FileEntry;
+use crate::entity::file;
 use crate::error::Result;
 use crate::error::S3GalleryError;
 use crate::types::FileSize;
@@ -13,7 +13,7 @@ pub struct DuplicateGroup {
     /// Size of the files in this group.
     pub size: FileSize,
     /// Files in this duplicate group.
-    pub files: Vec<FileEntry>,
+    pub files: Vec<file::Model>,
 }
 
 /// Find duplicate files (same size + same etag).
@@ -26,6 +26,8 @@ pub async fn find_duplicates(
     host_id: Option<&str>,
 ) -> Result<Vec<DuplicateGroup>> {
     // Query for duplicate keys (size, etag pairs with count > 1)
+    // We use raw SQL because GROUP BY with HAVING is not directly supported
+    // by SeaORM's query builder.
     let keys_sql = if host_id.is_some() {
         "SELECT size, etag FROM files \
          WHERE host_id = ? AND is_deleted = 0 \
@@ -37,17 +39,20 @@ pub async fn find_duplicates(
     };
 
     let key_rows = if let Some(hid) = host_id {
-        db.query_all(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
+        db.query_all(sea_orm::Statement::from_sql_and_values(
+            sea_orm::DbBackend::Sqlite,
             keys_sql,
             [hid.into()],
         ))
         .await
         .map_err(|e| S3GalleryError::DbError(e.to_string()))?
     } else {
-        db.query_all(Statement::from_string(DbBackend::Sqlite, keys_sql.to_string()))
-            .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+        db.query_all(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Sqlite,
+            keys_sql.to_string(),
+        ))
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?
     };
 
     let mut result = Vec::new();
@@ -60,31 +65,20 @@ pub async fn find_duplicates(
             .try_get("", "etag")
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        let files = if let Some(hid) = host_id {
-            let rows = db
-                .query_all(Statement::from_sql_and_values(
-                    DbBackend::Sqlite,
-                    "SELECT * FROM files
-                     WHERE host_id = ? AND size = ? AND etag = ? AND is_deleted = 0
-                     ORDER BY key",
-                    [hid.into(), dup_size.into(), dup_etag.into()],
-                ))
-                .await
-                .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-            rows_to_file_entries(&rows)?
-        } else {
-            let rows = db
-                .query_all(Statement::from_sql_and_values(
-                    DbBackend::Sqlite,
-                    "SELECT * FROM files
-                     WHERE size = ? AND etag = ? AND is_deleted = 0
-                     ORDER BY key",
-                    [dup_size.into(), dup_etag.into()],
-                ))
-                .await
-                .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-            rows_to_file_entries(&rows)?
-        };
+        let mut query = file::Entity::find()
+            .filter(file::Column::Size.eq(dup_size))
+            .filter(file::Column::Etag.eq(dup_etag))
+            .filter(file::Column::IsDeleted.eq(false))
+            .order_by(file::Column::Key, Order::Asc);
+
+        if let Some(hid) = host_id {
+            query = query.filter(file::Column::HostId.eq(hid));
+        }
+
+        let files = query
+            .all(db)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         let size = u64::try_from(dup_size).unwrap_or(0);
 
@@ -97,46 +91,6 @@ pub async fn find_duplicates(
     Ok(result)
 }
 
-/// Convert query result rows to `Vec<FileEntry>`.
-fn rows_to_file_entries(rows: &[sea_orm::QueryResult]) -> Result<Vec<FileEntry>> {
-    rows.iter()
-        .map(|row| {
-            Ok(FileEntry {
-                host_id: row
-                    .try_get::<String>("", "host_id")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                key: row
-                    .try_get::<String>("", "key")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                etag: row
-                    .try_get::<String>("", "etag")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                size: row
-                    .try_get::<i64>("", "size")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                last_modified: row
-                    .try_get::<String>("", "last_modified")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                content_type: row
-                    .try_get::<Option<String>>("", "content_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                file_type: row
-                    .try_get::<String>("", "file_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                metadata_state: row
-                    .try_get::<String>("", "metadata_state")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                effective_date: row
-                    .try_get::<String>("", "effective_date")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                is_deleted: row
-                    .try_get::<bool>("", "is_deleted")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-            })
-        })
-        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,15 +100,17 @@ mod tests {
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool();
+        run_migrations(pool).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
         FileEntry::upsert(
             pool,
             &FileEntry {
@@ -245,10 +201,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_duplicates() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let duplicates = find_duplicates(&pool, Some("test-host")).await?;
+        let duplicates = find_duplicates(&db, Some("test-host")).await?;
         assert_eq!(duplicates.len(), 2);
 
         assert_eq!(duplicates[0].size.as_u64(), 50000);
@@ -262,10 +218,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_duplicates_none() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
+        let (db, _dir) = setup_test_db().await?;
+        let pool = db.get_sqlite_connection_pool();
 
         FileEntry::upsert(
-            &pool,
+            pool,
             &FileEntry {
                 host_id: "test-host".to_string(),
                 key: "unique1.txt".to_string(),
@@ -282,7 +239,7 @@ mod tests {
         .await?;
 
         FileEntry::upsert(
-            &pool,
+            pool,
             &FileEntry {
                 host_id: "test-host".to_string(),
                 key: "unique2.txt".to_string(),
@@ -298,7 +255,7 @@ mod tests {
         )
         .await?;
 
-        let duplicates = find_duplicates(&pool, Some("test-host")).await?;
+        let duplicates = find_duplicates(&db, Some("test-host")).await?;
         assert!(duplicates.is_empty());
 
         Ok(())

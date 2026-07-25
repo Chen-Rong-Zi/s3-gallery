@@ -1,8 +1,8 @@
 //! Search functionality.
 
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
 
-use crate::db::models::FileEntry;
+use crate::entity::{file, file_tag, tag};
 use crate::error::Result;
 use crate::error::S3GalleryError;
 
@@ -10,7 +10,7 @@ use crate::error::S3GalleryError;
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     /// Matching files.
-    pub files: Vec<FileEntry>,
+    pub files: Vec<file::Model>,
     /// Total count of matching files.
     pub total_count: u64,
 }
@@ -25,54 +25,15 @@ pub async fn search_by_name(
     host_id: &str,
     query: &str,
 ) -> Result<SearchResult> {
-    let pattern = format!("%{query}%");
+    let s = file::Entity::find()
+        .filter(file::Column::IsDeleted.eq(false))
+        .filter(file::Column::HostId.eq(host_id))
+        .filter(file::Column::Key.contains(query));
 
-    let rows = db
-        .query_all(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "SELECT * FROM files WHERE host_id = ? AND key LIKE ? AND is_deleted = 0 ORDER BY key",
-            [host_id.into(), pattern.into()],
-        ))
+    let files = s
+        .all(db)
         .await
         .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-
-    let files = rows
-        .iter()
-        .map(|row| {
-            Ok(FileEntry {
-                host_id: row
-                    .try_get::<String>("", "host_id")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                key: row
-                    .try_get::<String>("", "key")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                etag: row
-                    .try_get::<String>("", "etag")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                size: row
-                    .try_get::<i64>("", "size")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                last_modified: row
-                    .try_get::<String>("", "last_modified")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                content_type: row
-                    .try_get::<Option<String>>("", "content_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                file_type: row
-                    .try_get::<String>("", "file_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                metadata_state: row
-                    .try_get::<String>("", "metadata_state")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                effective_date: row
-                    .try_get::<String>("", "effective_date")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                is_deleted: row
-                    .try_get::<bool>("", "is_deleted")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-            })
-        })
-        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()?;
 
     let total_count = u64::try_from(files.len()).unwrap_or(0);
 
@@ -89,56 +50,15 @@ pub async fn search_by_tag(
     host_id: &str,
     tag_name: &str,
 ) -> Result<SearchResult> {
-    let rows = db
-        .query_all(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "SELECT f.* FROM files f
-             INNER JOIN file_tags ft ON f.key = ft.file_key
-             INNER JOIN tags t ON ft.tag_id = t.tag_id
-             WHERE t.tag_name = ? AND f.host_id = ? AND f.is_deleted = 0
-             ORDER BY f.key",
-            [tag_name.into(), host_id.into()],
-        ))
+    let files = file::Entity::find()
+        .join_rev(JoinType::InnerJoin, file_tag::Relation::File.def())
+        .join(JoinType::InnerJoin, file_tag::Relation::Tag.def())
+        .filter(tag::Column::TagName.eq(tag_name))
+        .filter(file::Column::HostId.eq(host_id))
+        .filter(file::Column::IsDeleted.eq(false))
+        .all(db)
         .await
         .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-
-    let files = rows
-        .iter()
-        .map(|row| {
-            Ok(FileEntry {
-                host_id: row
-                    .try_get::<String>("", "host_id")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                key: row
-                    .try_get::<String>("", "key")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                etag: row
-                    .try_get::<String>("", "etag")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                size: row
-                    .try_get::<i64>("", "size")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                last_modified: row
-                    .try_get::<String>("", "last_modified")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                content_type: row
-                    .try_get::<Option<String>>("", "content_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                file_type: row
-                    .try_get::<String>("", "file_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                metadata_state: row
-                    .try_get::<String>("", "metadata_state")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                effective_date: row
-                    .try_get::<String>("", "effective_date")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                is_deleted: row
-                    .try_get::<bool>("", "is_deleted")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-            })
-        })
-        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()?;
 
     let total_count = u64::try_from(files.len()).unwrap_or(0);
 
@@ -148,21 +68,24 @@ pub async fn search_by_tag(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models::{FileEntry, FileTagEntry, TagEntry};
+    use crate::db::models::FileEntry;
+    use crate::db::models::{FileTagEntry, TagEntry};
     use crate::db::pool::create_pool;
     use crate::db::schema::run_migrations;
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool();
+        run_migrations(pool).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
         FileEntry::upsert(
             pool,
             &FileEntry {
@@ -217,7 +140,8 @@ mod tests {
         Ok(())
     }
 
-    async fn seed_test_tags(pool: &SqlitePool) -> Result<()> {
+    async fn seed_test_tags(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
         TagEntry::insert(
             pool,
             &TagEntry {
@@ -253,10 +177,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_by_name() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let result = search_by_name(&pool, "test-host", "jpg").await?;
+        let result = search_by_name(&db, "test-host", "jpg").await?;
         assert_eq!(result.total_count, 2);
 
         Ok(())
@@ -264,22 +188,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_by_name_partial() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let result = search_by_name(&pool, "test-host", "vacation").await?;
+        let result = search_by_name(&db, "test-host", "vacation").await?;
         assert_eq!(result.total_count, 1);
-        assert_eq!(result.files[0].key, "vacation/photo001.jpg");
+        assert_eq!(result.files[0].key.as_str(), "vacation/photo001.jpg");
 
         Ok(())
     }
 
     #[tokio::test]
     async fn test_search_by_name_no_match() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let result = search_by_name(&pool, "test-host", "nonexistent").await?;
+        let result = search_by_name(&db, "test-host", "nonexistent").await?;
         assert_eq!(result.total_count, 0);
         assert!(result.files.is_empty());
 
@@ -288,11 +212,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_by_tag() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
-        seed_test_tags(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
+        seed_test_tags(&db).await?;
 
-        let result = search_by_tag(&pool, "test-host", "photo").await?;
+        let result = search_by_tag(&db, "test-host", "photo").await?;
         assert_eq!(result.total_count, 2);
 
         Ok(())
@@ -300,10 +224,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_by_tag_no_match() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let result = search_by_tag(&pool, "test-host", "nonexistent").await?;
+        let result = search_by_tag(&db, "test-host", "nonexistent").await?;
         assert_eq!(result.total_count, 0);
         assert!(result.files.is_empty());
 

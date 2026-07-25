@@ -217,15 +217,17 @@ mod tests {
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool();
+        run_migrations(pool).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
         FileEntry::upsert(
             pool,
             &FileEntry {
@@ -282,10 +284,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_tree() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let tree = build_tree(&pool, "test-host", "").await?;
+        let tree = build_tree(&db, "test-host", "").await?;
 
         assert!(tree.is_directory);
         assert_eq!(tree.file_count, 3);
@@ -297,10 +299,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_tree_subdir() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let tree = build_tree(&pool, "test-host", "photos").await?;
+        let tree = build_tree(&db, "test-host", "photos").await?;
 
         assert!(tree.is_directory);
         assert_eq!(tree.file_count, 2);
@@ -311,9 +313,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_tree_empty() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
+        let (db, _dir) = setup_test_db().await?;
 
-        let tree = build_tree(&pool, "test-host", "").await?;
+        let tree = build_tree(&db, "test-host", "").await?;
 
         assert!(tree.is_directory);
         assert_eq!(tree.file_count, 0);

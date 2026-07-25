@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder};
 
-use crate::db::models::FileEntry;
+use crate::entity::file;
 use crate::error::Result;
 use crate::error::S3GalleryError;
 
@@ -14,7 +14,7 @@ pub struct TimelineEntry {
     /// Date in YYYY-MM-DD format.
     pub date: String,
     /// Files from this date.
-    pub files: Vec<FileEntry>,
+    pub files: Vec<file::Model>,
     /// Number of files in this entry.
     pub count: u64,
 }
@@ -28,28 +28,20 @@ pub async fn get_timeline(
     db: &DatabaseConnection,
     host_id: Option<&str>,
 ) -> Result<Vec<TimelineEntry>> {
-    let files: Vec<FileEntry> = if let Some(hid) = host_id {
-        let rows = db
-            .query_all(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                "SELECT * FROM files WHERE host_id = ? AND is_deleted = 0 ORDER BY last_modified DESC",
-                [hid.into()],
-            ))
-            .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        rows_from_query_results(&rows)?
-    } else {
-        let rows = db
-            .query_all(Statement::from_string(
-                DbBackend::Sqlite,
-                "SELECT * FROM files WHERE is_deleted = 0 ORDER BY last_modified DESC".to_string(),
-            ))
-            .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        rows_from_query_results(&rows)?
-    };
+    let mut query = file::Entity::find()
+        .filter(file::Column::IsDeleted.eq(false))
+        .order_by(file::Column::LastModified, Order::Desc);
 
-    let mut grouped: BTreeMap<String, Vec<FileEntry>> = BTreeMap::new();
+    if let Some(hid) = host_id {
+        query = query.filter(file::Column::HostId.eq(hid));
+    }
+
+    let files = query
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+
+    let mut grouped: BTreeMap<String, Vec<file::Model>> = BTreeMap::new();
 
     for file in files {
         let date = if file.effective_date.is_empty() {
@@ -71,46 +63,6 @@ pub async fn get_timeline(
     Ok(result)
 }
 
-/// Convert query result rows to `Vec<FileEntry>`.
-fn rows_from_query_results(rows: &[sea_orm::QueryResult]) -> Result<Vec<FileEntry>> {
-    rows.iter()
-        .map(|row| {
-            Ok(FileEntry {
-                host_id: row
-                    .try_get::<String>("", "host_id")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                key: row
-                    .try_get::<String>("", "key")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                etag: row
-                    .try_get::<String>("", "etag")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                size: row
-                    .try_get::<i64>("", "size")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                last_modified: row
-                    .try_get::<String>("", "last_modified")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                content_type: row
-                    .try_get::<Option<String>>("", "content_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                file_type: row
-                    .try_get::<String>("", "file_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                metadata_state: row
-                    .try_get::<String>("", "metadata_state")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                effective_date: row
-                    .try_get::<String>("", "effective_date")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                is_deleted: row
-                    .try_get::<bool>("", "is_deleted")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-            })
-        })
-        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()
-}
-
 fn extract_date(timestamp: &str) -> String {
     if timestamp.len() >= 10 {
         timestamp[..10].to_string()
@@ -128,15 +80,17 @@ mod tests {
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool();
+        run_migrations(pool).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
         FileEntry::upsert(
             pool,
             &FileEntry {
@@ -210,10 +164,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_timeline() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let timeline = get_timeline(&pool, Some("test-host")).await?;
+        let timeline = get_timeline(&db, Some("test-host")).await?;
         assert_eq!(timeline.len(), 2);
 
         assert_eq!(timeline[0].date, "2024-02-20");
@@ -227,9 +181,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_timeline_empty() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
+        let (db, _dir) = setup_test_db().await?;
 
-        let timeline = get_timeline(&pool, Some("test-host")).await?;
+        let timeline = get_timeline(&db, Some("test-host")).await?;
         assert!(timeline.is_empty());
 
         Ok(())

@@ -373,21 +373,29 @@ mod tests {
     use super::*;
     use crate::db::pool::create_pool;
     use crate::error::S3GalleryError;
+    use sea_orm::DatabaseConnection;
     use tempfile::tempdir;
+
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
+        let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        let db_path = dir.path().join("test.db");
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool();
+        run_migrations(pool).await?;
+        Ok((db, dir))
+    }
 
     #[tokio::test]
     async fn test_run_migrations_creates_tables() -> crate::error::Result<()> {
-        let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
+        let (db, dir) = setup_test_db().await?;
+        let pool = db.get_sqlite_connection_pool();
 
         // Verify all 10 user tables exist (sqlite_sequence is auto-generated
         // for AUTOINCREMENT columns and is excluded from the count).
         let tables: Vec<String> = sqlx::query_scalar(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
         )
-        .fetch_all(&pool)
+        .fetch_all(pool)
         .await
         .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
@@ -424,18 +432,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_migration_is_idempotent() -> crate::error::Result<()> {
-        let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
+        let (db, dir) = setup_test_db().await?;
+        let pool = db.get_sqlite_connection_pool();
 
         // Run migrations twice
-        run_migrations(&pool).await?;
-        run_migrations(&pool).await?;
+        run_migrations(pool).await?;
+        run_migrations(pool).await?;
 
         // Verify tables still exist
         let tables: Vec<String> =
             sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-                .fetch_all(&pool)
+                .fetch_all(pool)
                 .await
                 .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
@@ -449,15 +456,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_all_indexes_created() -> crate::error::Result<()> {
-        let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
+        let (db, dir) = setup_test_db().await?;
+        let pool = db.get_sqlite_connection_pool();
 
         let indexes: Vec<String> = sqlx::query_scalar(
             "SELECT name FROM sqlite_master WHERE type='index' AND name IS NOT NULL ORDER BY name",
         )
-        .fetch_all(&pool)
+        .fetch_all(pool)
         .await
         .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
@@ -492,14 +497,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_schema_version_set() -> crate::error::Result<()> {
-        let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
+        let (db, dir) = setup_test_db().await?;
+        let pool = db.get_sqlite_connection_pool();
 
         let version: i64 =
             sqlx::query_scalar("SELECT db_schema_version FROM scan_metadata LIMIT 1")
-                .fetch_one(&pool)
+                .fetch_one(pool)
                 .await
                 .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
@@ -512,14 +515,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_foreign_keys_enabled() -> crate::error::Result<()> {
-        let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
+        let (db, dir) = setup_test_db().await?;
+        let pool = db.get_sqlite_connection_pool();
 
         // PRAGMA foreign_keys returns 0 or 1.
         let fk_enabled: i32 = sqlx::query_scalar("PRAGMA foreign_keys;")
-            .fetch_one(&pool)
+            .fetch_one(pool)
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 

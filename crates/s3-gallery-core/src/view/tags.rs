@@ -1,8 +1,11 @@
 //! Tag operations.
 
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
+use sea_orm::{
+    ColumnTrait, DatabaseConnection, EntityTrait, JoinType, QueryFilter, QuerySelect,
+    RelationTrait,
+};
 
-use crate::db::models::{FileEntry, TagEntry};
+use crate::entity::{file, file_tag, tag};
 use crate::error::Result;
 use crate::error::S3GalleryError;
 
@@ -14,35 +17,26 @@ use crate::error::S3GalleryError;
 pub async fn list_tags(
     db: &DatabaseConnection,
     host_id: Option<&str>,
-) -> Result<Vec<TagEntry>> {
-    let tags: Vec<TagEntry> = if let Some(hid) = host_id {
-        let rows = db
-            .query_all(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                "SELECT DISTINCT t.* FROM tags t
-                 INNER JOIN file_tags ft ON t.tag_id = ft.tag_id
-                 INNER JOIN files f ON ft.file_key = f.key
-                 WHERE f.host_id = ?
-                 ORDER BY t.tag_name",
-                [hid.into()],
-            ))
+) -> Result<Vec<tag::Model>> {
+    let tags: Vec<tag::Model> = if let Some(hid) = host_id {
+        tag::Entity::find()
+            .distinct()
+            .join_rev(JoinType::InnerJoin, file_tag::Relation::Tag.def())
+            .join(JoinType::InnerJoin, file_tag::Relation::File.def())
+            .filter(file::Column::HostId.eq(hid))
+            .filter(file::Column::IsDeleted.eq(false))
+            .all(db)
             .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        rows_to_tag_entries(&rows)?
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
     } else {
-        let rows = db
-            .query_all(Statement::from_string(
-                DbBackend::Sqlite,
-                "SELECT DISTINCT t.* FROM tags t
-                 INNER JOIN file_tags ft ON t.tag_id = ft.tag_id
-                 INNER JOIN files f ON ft.file_key = f.key
-                 WHERE f.is_deleted = 0
-                 ORDER BY t.tag_name"
-                    .to_string(),
-            ))
+        tag::Entity::find()
+            .distinct()
+            .join_rev(JoinType::InnerJoin, file_tag::Relation::Tag.def())
+            .join(JoinType::InnerJoin, file_tag::Relation::File.def())
+            .filter(file::Column::IsDeleted.eq(false))
+            .all(db)
             .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        rows_to_tag_entries(&rows)?
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
     };
 
     Ok(tags)
@@ -57,97 +51,29 @@ pub async fn get_files_by_tag(
     db: &DatabaseConnection,
     host_id: Option<&str>,
     tag_name: &str,
-) -> Result<Vec<FileEntry>> {
-    let files: Vec<FileEntry> = if let Some(hid) = host_id {
-        let rows = db
-            .query_all(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                "SELECT f.* FROM files f
-                 INNER JOIN file_tags ft ON f.key = ft.file_key
-                 INNER JOIN tags t ON ft.tag_id = t.tag_id
-                 WHERE t.tag_name = ? AND f.host_id = ? AND f.is_deleted = 0
-                 ORDER BY f.key",
-                [tag_name.into(), hid.into()],
-            ))
+) -> Result<Vec<file::Model>> {
+    let files: Vec<file::Model> = if let Some(hid) = host_id {
+        file::Entity::find()
+            .join_rev(JoinType::InnerJoin, file_tag::Relation::File.def())
+            .join(JoinType::InnerJoin, file_tag::Relation::Tag.def())
+            .filter(tag::Column::TagName.eq(tag_name))
+            .filter(file::Column::HostId.eq(hid))
+            .filter(file::Column::IsDeleted.eq(false))
+            .all(db)
             .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        rows_to_file_entries(&rows)?
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
     } else {
-        let rows = db
-            .query_all(Statement::from_sql_and_values(
-                DbBackend::Sqlite,
-                "SELECT f.* FROM files f
-                 INNER JOIN file_tags ft ON f.key = ft.file_key
-                 INNER JOIN tags t ON ft.tag_id = t.tag_id
-                 WHERE t.tag_name = ? AND f.is_deleted = 0
-                 ORDER BY f.key",
-                [tag_name.into()],
-            ))
+        file::Entity::find()
+            .join_rev(JoinType::InnerJoin, file_tag::Relation::File.def())
+            .join(JoinType::InnerJoin, file_tag::Relation::Tag.def())
+            .filter(tag::Column::TagName.eq(tag_name))
+            .filter(file::Column::IsDeleted.eq(false))
+            .all(db)
             .await
-            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        rows_to_file_entries(&rows)?
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
     };
 
     Ok(files)
-}
-
-/// Convert query result rows to `Vec<FileEntry>`.
-fn rows_to_file_entries(rows: &[sea_orm::QueryResult]) -> Result<Vec<FileEntry>> {
-    rows.iter()
-        .map(|row| {
-            Ok(FileEntry {
-                host_id: row
-                    .try_get::<String>("", "host_id")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                key: row
-                    .try_get::<String>("", "key")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                etag: row
-                    .try_get::<String>("", "etag")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                size: row
-                    .try_get::<i64>("", "size")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                last_modified: row
-                    .try_get::<String>("", "last_modified")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                content_type: row
-                    .try_get::<Option<String>>("", "content_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                file_type: row
-                    .try_get::<String>("", "file_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                metadata_state: row
-                    .try_get::<String>("", "metadata_state")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                effective_date: row
-                    .try_get::<String>("", "effective_date")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                is_deleted: row
-                    .try_get::<bool>("", "is_deleted")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-            })
-        })
-        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()
-}
-
-/// Convert query result rows to `Vec<TagEntry>`.
-fn rows_to_tag_entries(rows: &[sea_orm::QueryResult]) -> Result<Vec<TagEntry>> {
-    rows.iter()
-        .map(|row| {
-            Ok(TagEntry {
-                tag_id: row
-                    .try_get::<i64>("", "tag_id")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                tag_name: row
-                    .try_get::<String>("", "tag_name")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-                tag_type: row
-                    .try_get::<String>("", "tag_type")
-                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
-            })
-        })
-        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()
 }
 
 #[cfg(test)]
@@ -159,15 +85,17 @@ mod tests {
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool();
+        run_migrations(pool).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_data(pool: &SqlitePool) -> Result<()> {
+    async fn seed_test_data(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
         FileEntry::upsert(
             pool,
             &FileEntry {
@@ -248,10 +176,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_tags() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_data(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_data(&db).await?;
 
-        let tags = list_tags(&pool, Some("test-host")).await?;
+        let tags = list_tags(&db, Some("test-host")).await?;
         assert_eq!(tags.len(), 2);
 
         Ok(())
@@ -259,26 +187,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_files_by_tag() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_data(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_data(&db).await?;
 
-        let files = get_files_by_tag(&pool, Some("test-host"), "photo").await?;
+        let files = get_files_by_tag(&db, Some("test-host"), "photo").await?;
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].key, "photo001.jpg");
+        assert_eq!(files[0].key.as_str(), "photo001.jpg");
 
-        let files = get_files_by_tag(&pool, Some("test-host"), "video").await?;
+        let files = get_files_by_tag(&db, Some("test-host"), "video").await?;
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].key, "video.mp4");
+        assert_eq!(files[0].key.as_str(), "video.mp4");
 
         Ok(())
     }
 
     #[tokio::test]
     async fn test_get_files_by_tag_nonexistent() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_data(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_data(&db).await?;
 
-        let files = get_files_by_tag(&pool, Some("test-host"), "nonexistent").await?;
+        let files = get_files_by_tag(&db, Some("test-host"), "nonexistent").await?;
         assert!(files.is_empty());
 
         Ok(())

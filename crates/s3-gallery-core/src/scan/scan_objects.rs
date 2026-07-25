@@ -105,7 +105,8 @@ mod tests {
     async fn test_batch_insert_and_list() -> Result<()> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool().clone();
         run_migrations(&pool).await?;
 
         let objects = vec![

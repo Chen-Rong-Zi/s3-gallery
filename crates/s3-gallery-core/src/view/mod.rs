@@ -106,7 +106,7 @@ impl LocalView {
     pub async fn list_tags(
         &self,
         host_id: &str,
-    ) -> crate::error::Result<Vec<crate::db::models::TagEntry>> {
+    ) -> crate::error::Result<Vec<crate::entity::tag::Model>> {
         tags::list_tags(&self.db, Some(host_id)).await
     }
 
@@ -119,7 +119,7 @@ impl LocalView {
         &self,
         host_id: &str,
         tag_name: &str,
-    ) -> crate::error::Result<Vec<crate::db::models::FileEntry>> {
+    ) -> crate::error::Result<Vec<crate::entity::file::Model>> {
         tags::get_files_by_tag(&self.db, Some(host_id), tag_name).await
     }
 

@@ -132,7 +132,8 @@ mod tests {
     async fn test_scan_empty_bucket() -> Result<()> {
         let dir = tempdir().map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
+        let db = create_pool(&db_path).await?;
+        let pool = db.get_sqlite_connection_pool().clone();
         run_migrations(&pool).await?;
 
         let s3 = Arc::new(MockS3Client::new()) as Arc<dyn S3Client>;
