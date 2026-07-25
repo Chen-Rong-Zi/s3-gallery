@@ -1,41 +1,48 @@
 //! Tag operations.
 
-use sqlx::SqlitePool;
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 
 use crate::db::models::{FileEntry, TagEntry};
 use crate::error::Result;
+use crate::error::S3GalleryError;
 
 /// List all tags.
 ///
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn list_tags(db: &SqlitePool, host_id: Option<&str>) -> Result<Vec<TagEntry>> {
-    // Tags are global (not host-specific), but filter by host_id to only
-    // return tags that have files associated with this host.
+pub async fn list_tags(
+    db: &DatabaseConnection,
+    host_id: Option<&str>,
+) -> Result<Vec<TagEntry>> {
     let tags: Vec<TagEntry> = if let Some(hid) = host_id {
-        sqlx::query_as(
-            "SELECT DISTINCT t.* FROM tags t
-             INNER JOIN file_tags ft ON t.tag_id = ft.tag_id
-             INNER JOIN files f ON ft.file_key = f.key
-             WHERE f.host_id = ?
-             ORDER BY t.tag_name",
-        )
-        .bind(hid)
-        .fetch_all(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
+        let rows = db
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                "SELECT DISTINCT t.* FROM tags t
+                 INNER JOIN file_tags ft ON t.tag_id = ft.tag_id
+                 INNER JOIN files f ON ft.file_key = f.key
+                 WHERE f.host_id = ?
+                 ORDER BY t.tag_name",
+                [hid.into()],
+            ))
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        rows_to_tag_entries(&rows)?
     } else {
-        sqlx::query_as(
-            "SELECT DISTINCT t.* FROM tags t
-             INNER JOIN file_tags ft ON t.tag_id = ft.tag_id
-             INNER JOIN files f ON ft.file_key = f.key
-             WHERE f.is_deleted = 0
-             ORDER BY t.tag_name",
-        )
-        .fetch_all(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
+        let rows = db
+            .query_all(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT DISTINCT t.* FROM tags t
+                 INNER JOIN file_tags ft ON t.tag_id = ft.tag_id
+                 INNER JOIN files f ON ft.file_key = f.key
+                 WHERE f.is_deleted = 0
+                 ORDER BY t.tag_name"
+                    .to_string(),
+            ))
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        rows_to_tag_entries(&rows)?
     };
 
     Ok(tags)
@@ -47,38 +54,100 @@ pub async fn list_tags(db: &SqlitePool, host_id: Option<&str>) -> Result<Vec<Tag
 ///
 /// Returns an error if the database query fails.
 pub async fn get_files_by_tag(
-    db: &SqlitePool,
+    db: &DatabaseConnection,
     host_id: Option<&str>,
     tag_name: &str,
 ) -> Result<Vec<FileEntry>> {
     let files: Vec<FileEntry> = if let Some(hid) = host_id {
-        sqlx::query_as(
-            "SELECT f.* FROM files f
-             INNER JOIN file_tags ft ON f.key = ft.file_key
-             INNER JOIN tags t ON ft.tag_id = t.tag_id
-             WHERE t.tag_name = ? AND f.host_id = ? AND f.is_deleted = 0
-             ORDER BY f.key",
-        )
-        .bind(tag_name)
-        .bind(hid)
-        .fetch_all(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
+        let rows = db
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                "SELECT f.* FROM files f
+                 INNER JOIN file_tags ft ON f.key = ft.file_key
+                 INNER JOIN tags t ON ft.tag_id = t.tag_id
+                 WHERE t.tag_name = ? AND f.host_id = ? AND f.is_deleted = 0
+                 ORDER BY f.key",
+                [tag_name.into(), hid.into()],
+            ))
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        rows_to_file_entries(&rows)?
     } else {
-        sqlx::query_as(
-            "SELECT f.* FROM files f
-             INNER JOIN file_tags ft ON f.key = ft.file_key
-             INNER JOIN tags t ON ft.tag_id = t.tag_id
-             WHERE t.tag_name = ? AND f.is_deleted = 0
-             ORDER BY f.key",
-        )
-        .bind(tag_name)
-        .fetch_all(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
+        let rows = db
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                "SELECT f.* FROM files f
+                 INNER JOIN file_tags ft ON f.key = ft.file_key
+                 INNER JOIN tags t ON ft.tag_id = t.tag_id
+                 WHERE t.tag_name = ? AND f.is_deleted = 0
+                 ORDER BY f.key",
+                [tag_name.into()],
+            ))
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        rows_to_file_entries(&rows)?
     };
 
     Ok(files)
+}
+
+/// Convert query result rows to `Vec<FileEntry>`.
+fn rows_to_file_entries(rows: &[sea_orm::QueryResult]) -> Result<Vec<FileEntry>> {
+    rows.iter()
+        .map(|row| {
+            Ok(FileEntry {
+                host_id: row
+                    .try_get::<String>("", "host_id")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                key: row
+                    .try_get::<String>("", "key")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                etag: row
+                    .try_get::<String>("", "etag")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                size: row
+                    .try_get::<i64>("", "size")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                last_modified: row
+                    .try_get::<String>("", "last_modified")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                content_type: row
+                    .try_get::<Option<String>>("", "content_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                file_type: row
+                    .try_get::<String>("", "file_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                metadata_state: row
+                    .try_get::<String>("", "metadata_state")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                effective_date: row
+                    .try_get::<String>("", "effective_date")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                is_deleted: row
+                    .try_get::<bool>("", "is_deleted")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()
+}
+
+/// Convert query result rows to `Vec<TagEntry>`.
+fn rows_to_tag_entries(rows: &[sea_orm::QueryResult]) -> Result<Vec<TagEntry>> {
+    rows.iter()
+        .map(|row| {
+            Ok(TagEntry {
+                tag_id: row
+                    .try_get::<i64>("", "tag_id")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                tag_name: row
+                    .try_get::<String>("", "tag_name")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                tag_type: row
+                    .try_get::<String>("", "tag_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()
 }
 
 #[cfg(test)]

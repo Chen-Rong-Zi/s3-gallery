@@ -1,11 +1,11 @@
 //! Find duplicate files.
 
-use sqlx::SqlitePool;
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 
 use crate::db::models::FileEntry;
 use crate::error::Result;
+use crate::error::S3GalleryError;
 use crate::types::FileSize;
-use crate::util::db_helpers::fetch_all_opt;
 
 /// A group of duplicate files.
 #[derive(Debug, Clone)]
@@ -22,56 +22,71 @@ pub struct DuplicateGroup {
 ///
 /// Returns an error if the database query fails.
 pub async fn find_duplicates(
-    db: &SqlitePool,
+    db: &DatabaseConnection,
     host_id: Option<&str>,
 ) -> Result<Vec<DuplicateGroup>> {
-    #[derive(Debug, sqlx::FromRow)]
-    struct DuplicateKey {
-        size: i64,
-        etag: String,
-    }
-
-    let keys: Vec<DuplicateKey> = fetch_all_opt(
-        db,
-        "SELECT size, etag \
-         FROM files \
+    // Query for duplicate keys (size, etag pairs with count > 1)
+    let keys_sql = if host_id.is_some() {
+        "SELECT size, etag FROM files \
          WHERE host_id = ? AND is_deleted = 0 \
-         GROUP BY size, etag \
-         HAVING COUNT(*) > 1 \
-         ORDER BY size DESC",
-        host_id,
-    )
-    .await?;
+         GROUP BY size, etag HAVING COUNT(*) > 1 ORDER BY size DESC"
+    } else {
+        "SELECT size, etag FROM files \
+         WHERE is_deleted = 0 \
+         GROUP BY size, etag HAVING COUNT(*) > 1 ORDER BY size DESC"
+    };
+
+    let key_rows = if let Some(hid) = host_id {
+        db.query_all(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            keys_sql,
+            [hid.into()],
+        ))
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+    } else {
+        db.query_all(Statement::from_string(DbBackend::Sqlite, keys_sql.to_string()))
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+    };
 
     let mut result = Vec::new();
 
-    for key in keys {
-        let files: Vec<FileEntry> = if let Some(hid) = host_id {
-            sqlx::query_as(
-                "SELECT * FROM files
-                 WHERE host_id = ? AND size = ? AND etag = ? AND is_deleted = 0
-                 ORDER BY key",
-            )
-            .bind(hid)
-            .bind(key.size)
-            .bind(&key.etag)
-            .fetch_all(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
+    for key_row in &key_rows {
+        let dup_size: i64 = key_row
+            .try_get("", "size")
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        let dup_etag: String = key_row
+            .try_get("", "etag")
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+
+        let files = if let Some(hid) = host_id {
+            let rows = db
+                .query_all(Statement::from_sql_and_values(
+                    DbBackend::Sqlite,
+                    "SELECT * FROM files
+                     WHERE host_id = ? AND size = ? AND etag = ? AND is_deleted = 0
+                     ORDER BY key",
+                    [hid.into(), dup_size.into(), dup_etag.into()],
+                ))
+                .await
+                .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            rows_to_file_entries(&rows)?
         } else {
-            sqlx::query_as(
-                "SELECT * FROM files
-                 WHERE size = ? AND etag = ? AND is_deleted = 0
-                 ORDER BY key",
-            )
-            .bind(key.size)
-            .bind(&key.etag)
-            .fetch_all(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
+            let rows = db
+                .query_all(Statement::from_sql_and_values(
+                    DbBackend::Sqlite,
+                    "SELECT * FROM files
+                     WHERE size = ? AND etag = ? AND is_deleted = 0
+                     ORDER BY key",
+                    [dup_size.into(), dup_etag.into()],
+                ))
+                .await
+                .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            rows_to_file_entries(&rows)?
         };
 
-        let size = u64::try_from(key.size).unwrap_or(0);
+        let size = u64::try_from(dup_size).unwrap_or(0);
 
         result.push(DuplicateGroup {
             size: FileSize::new(size),
@@ -80,6 +95,46 @@ pub async fn find_duplicates(
     }
 
     Ok(result)
+}
+
+/// Convert query result rows to `Vec<FileEntry>`.
+fn rows_to_file_entries(rows: &[sea_orm::QueryResult]) -> Result<Vec<FileEntry>> {
+    rows.iter()
+        .map(|row| {
+            Ok(FileEntry {
+                host_id: row
+                    .try_get::<String>("", "host_id")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                key: row
+                    .try_get::<String>("", "key")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                etag: row
+                    .try_get::<String>("", "etag")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                size: row
+                    .try_get::<i64>("", "size")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                last_modified: row
+                    .try_get::<String>("", "last_modified")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                content_type: row
+                    .try_get::<Option<String>>("", "content_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                file_type: row
+                    .try_get::<String>("", "file_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                metadata_state: row
+                    .try_get::<String>("", "metadata_state")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                effective_date: row
+                    .try_get::<String>("", "effective_date")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                is_deleted: row
+                    .try_get::<bool>("", "is_deleted")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()
 }
 
 #[cfg(test)]

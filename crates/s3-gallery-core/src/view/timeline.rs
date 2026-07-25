@@ -2,10 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use sqlx::SqlitePool;
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 
 use crate::db::models::FileEntry;
 use crate::error::Result;
+use crate::error::S3GalleryError;
 
 /// A timeline entry containing files from a specific date.
 #[derive(Debug, Clone)]
@@ -23,20 +24,29 @@ pub struct TimelineEntry {
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn get_timeline(db: &SqlitePool, host_id: Option<&str>) -> Result<Vec<TimelineEntry>> {
+pub async fn get_timeline(
+    db: &DatabaseConnection,
+    host_id: Option<&str>,
+) -> Result<Vec<TimelineEntry>> {
     let files: Vec<FileEntry> = if let Some(hid) = host_id {
-        sqlx::query_as(
-            "SELECT * FROM files WHERE host_id = ? AND is_deleted = 0 ORDER BY last_modified DESC",
-        )
-        .bind(hid)
-        .fetch_all(db)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
-    } else {
-        sqlx::query_as("SELECT * FROM files WHERE is_deleted = 0 ORDER BY last_modified DESC")
-            .fetch_all(db)
+        let rows = db
+            .query_all(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                "SELECT * FROM files WHERE host_id = ? AND is_deleted = 0 ORDER BY last_modified DESC",
+                [hid.into()],
+            ))
             .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        rows_from_query_results(&rows)?
+    } else {
+        let rows = db
+            .query_all(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT * FROM files WHERE is_deleted = 0 ORDER BY last_modified DESC".to_string(),
+            ))
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        rows_from_query_results(&rows)?
     };
 
     let mut grouped: BTreeMap<String, Vec<FileEntry>> = BTreeMap::new();
@@ -59,6 +69,46 @@ pub async fn get_timeline(db: &SqlitePool, host_id: Option<&str>) -> Result<Vec<
     }
 
     Ok(result)
+}
+
+/// Convert query result rows to `Vec<FileEntry>`.
+fn rows_from_query_results(rows: &[sea_orm::QueryResult]) -> Result<Vec<FileEntry>> {
+    rows.iter()
+        .map(|row| {
+            Ok(FileEntry {
+                host_id: row
+                    .try_get::<String>("", "host_id")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                key: row
+                    .try_get::<String>("", "key")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                etag: row
+                    .try_get::<String>("", "etag")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                size: row
+                    .try_get::<i64>("", "size")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                last_modified: row
+                    .try_get::<String>("", "last_modified")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                content_type: row
+                    .try_get::<Option<String>>("", "content_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                file_type: row
+                    .try_get::<String>("", "file_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                metadata_state: row
+                    .try_get::<String>("", "metadata_state")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                effective_date: row
+                    .try_get::<String>("", "effective_date")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                is_deleted: row
+                    .try_get::<bool>("", "is_deleted")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()
 }
 
 fn extract_date(timestamp: &str) -> String {

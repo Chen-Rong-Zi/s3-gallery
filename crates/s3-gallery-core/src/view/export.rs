@@ -1,9 +1,10 @@
 //! Export file list functionality.
 
-use sqlx::SqlitePool;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder};
 
-use crate::db::models::FileEntry;
+use crate::entity::file;
 use crate::error::Result;
+use crate::error::S3GalleryError;
 
 /// Export format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,13 +20,18 @@ pub enum ExportFormat {
 /// # Errors
 ///
 /// Returns an error if the database query fails or serialization fails.
-pub async fn export_files(db: &SqlitePool, host_id: &str, format: ExportFormat) -> Result<String> {
-    let files: Vec<FileEntry> =
-        sqlx::query_as("SELECT * FROM files WHERE host_id = ? AND is_deleted = 0 ORDER BY key")
-            .bind(host_id)
-            .fetch_all(db)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+pub async fn export_files(
+    db: &DatabaseConnection,
+    host_id: &str,
+    format: ExportFormat,
+) -> Result<String> {
+    let files = file::Entity::find()
+        .filter(file::Column::HostId.eq(host_id))
+        .filter(file::Column::IsDeleted.eq(false))
+        .order_by(file::Column::Key, Order::Asc)
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     match format {
         ExportFormat::Csv => export_csv(&files),
@@ -33,18 +39,18 @@ pub async fn export_files(db: &SqlitePool, host_id: &str, format: ExportFormat) 
     }
 }
 
-fn export_csv(files: &[FileEntry]) -> Result<String> {
+fn export_csv(files: &[file::Model]) -> Result<String> {
     let mut csv = String::new();
     csv.push_str("key,etag,size,last_modified,file_type\n");
 
     for file in files {
-        let key = escape_csv(&file.key);
-        let etag = escape_csv(&file.etag);
+        let key = escape_csv(&file.key.to_string());
+        let etag = escape_csv(&file.etag.to_string());
         let last_modified = escape_csv(&file.last_modified);
-        let file_type = escape_csv(&file.file_type);
+        let file_type = escape_csv(&file.file_type.to_string());
         csv.push_str(&format!(
             "{key},{etag},{size},{last_modified},{file_type}\n",
-            size = file.size
+            size = file.size.as_u64()
         ));
     }
 
@@ -60,28 +66,28 @@ fn escape_csv(s: &str) -> String {
     }
 }
 
-fn export_json(files: &[FileEntry]) -> Result<String> {
+fn export_json(files: &[file::Model]) -> Result<String> {
     #[derive(serde::Serialize)]
-    struct FileRow<'a> {
-        key: &'a str,
-        etag: &'a str,
-        size: i64,
-        last_modified: &'a str,
-        content_type: &'a Option<String>,
-        file_type: &'a str,
-        metadata_state: &'a str,
+    struct FileRow {
+        key: String,
+        etag: String,
+        size: u64,
+        last_modified: String,
+        content_type: Option<String>,
+        file_type: String,
+        metadata_state: String,
     }
 
     let mut rows = Vec::with_capacity(files.len());
     for file in files {
         rows.push(FileRow {
-            key: &file.key,
-            etag: &file.etag,
-            size: file.size,
-            last_modified: &file.last_modified,
-            content_type: &file.content_type,
-            file_type: &file.file_type,
-            metadata_state: &file.metadata_state,
+            key: file.key.to_string(),
+            etag: file.etag.to_string(),
+            size: file.size.as_u64(),
+            last_modified: file.last_modified.clone(),
+            content_type: file.content_type.clone(),
+            file_type: file.file_type.to_string(),
+            metadata_state: file.metadata_state.to_string(),
         });
     }
 

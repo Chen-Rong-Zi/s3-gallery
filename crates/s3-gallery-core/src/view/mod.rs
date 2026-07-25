@@ -15,25 +15,24 @@ pub mod timeline_gallery;
 pub mod traffic;
 pub mod tree;
 
-
-use sqlx::SqlitePool;
+use sea_orm::DatabaseConnection;
 
 /// Local view - pure database queries, no S3 operations.
 ///
 /// The absence of an S3Client field is a compiler-enforced guarantee
 /// that no S3 I/O can be performed through this struct.
 pub struct LocalView {
-    db: SqlitePool,
+    db: DatabaseConnection,
 }
 
 impl LocalView {
-    /// Create a new LocalView from a database connection pool.
-    pub fn new(db: SqlitePool) -> Self {
+    /// Create a new LocalView from a database connection.
+    pub fn new(db: DatabaseConnection) -> Self {
         Self { db }
     }
 
-    /// Get a reference to the database connection pool.
-    pub fn db(&self) -> &SqlitePool {
+    /// Get a reference to the database connection.
+    pub fn db(&self) -> &DatabaseConnection {
         &self.db
     }
 

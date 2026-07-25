@@ -1,14 +1,13 @@
 //! File statistics functionality.
 
 use std::collections::HashMap;
-use std::str::FromStr;
 
-use sqlx::SqlitePool;
+use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter, Statement};
 
-use crate::db::models::FileEntry;
+use crate::entity::file;
 use crate::error::Result;
-use crate::types::FileSize;
-use crate::util::db_helpers::{fetch_all_opt, fetch_scalar_opt};
+use crate::error::S3GalleryError;
+use crate::types::{FileSize, MetadataState};
 
 /// Statistics about files in the database.
 #[derive(Debug, Clone)]
@@ -34,71 +33,82 @@ pub struct FileStats {
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-pub async fn get_stats(db: &SqlitePool, host_id: Option<&str>) -> Result<FileStats> {
+pub async fn get_stats(db: &DatabaseConnection, host_id: Option<&str>) -> Result<FileStats> {
     let mut by_category = HashMap::new();
     let mut by_file_type = HashMap::new();
 
-    let total_files: i64 = fetch_scalar_opt(
-        db,
-        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0",
-        host_id,
-    )
-    .await?;
+    // Build base query for non-deleted files
+    let mut active_query = file::Entity::find().filter(file::Column::IsDeleted.eq(false));
+    let mut deleted_query = file::Entity::find().filter(file::Column::IsDeleted.eq(true));
+    if let Some(hid) = host_id {
+        active_query = active_query.filter(file::Column::HostId.eq(hid));
+        deleted_query = deleted_query.filter(file::Column::HostId.eq(hid));
+    }
 
-    let total_size: Option<i64> = fetch_scalar_opt(
-        db,
-        "SELECT SUM(size) FROM files WHERE host_id = ? AND is_deleted = 0",
-        host_id,
-    )
-    .await?;
+    let total_files: u64 = active_query
+        .clone()
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+        .len() as u64;
 
-    let deleted_files: i64 = fetch_scalar_opt(
-        db,
-        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 1",
-        host_id,
-    )
-    .await?;
+    let deleted_files: u64 = deleted_query
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+        .len() as u64;
 
-    let metadata_extracted: i64 = fetch_scalar_opt(
-        db,
-        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0 AND metadata_state = 'extracted'",
-        host_id,
-    )
-    .await?;
+    // Metadata state counts
+    let mut extracted_query = file::Entity::find()
+        .filter(file::Column::IsDeleted.eq(false))
+        .filter(file::Column::MetadataState.eq(MetadataState::Extracted));
+    let mut pending_query = file::Entity::find()
+        .filter(file::Column::IsDeleted.eq(false))
+        .filter(file::Column::MetadataState.eq(MetadataState::Pending));
+    if let Some(hid) = host_id {
+        extracted_query = extracted_query.filter(file::Column::HostId.eq(hid));
+        pending_query = pending_query.filter(file::Column::HostId.eq(hid));
+    }
 
-    let metadata_pending: i64 = fetch_scalar_opt(
-        db,
-        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0 AND metadata_state = 'pending'",
-        host_id,
-    )
-    .await?;
+    let metadata_extracted: u64 = extracted_query
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+        .len() as u64;
 
-    let files: Vec<FileEntry> = fetch_all_opt(
-        db,
-        "SELECT * FROM files WHERE host_id = ? AND is_deleted = 0",
-        host_id,
-    )
-    .await?;
+    let metadata_pending: u64 = pending_query
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+        .len() as u64;
 
-    for file in files {
-        *by_file_type.entry(file.file_type.clone()).or_insert(0) += 1;
+    // Load all non-deleted files for type/category breakdown and total size
+    let mut files_query = file::Entity::find().filter(file::Column::IsDeleted.eq(false));
+    if let Some(hid) = host_id {
+        files_query = files_query.filter(file::Column::HostId.eq(hid));
+    }
+    let files = files_query
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        let file_type = crate::types::FileType::from_str(&file.file_type)
-            .unwrap_or(crate::types::FileType::Unknown);
-        let category = file_type.category();
+    let mut total_size_u64: u64 = 0;
+    for f in &files {
+        total_size_u64 += f.size.as_u64();
+        let ft_str = f.file_type.to_string();
+        *by_file_type.entry(ft_str).or_insert(0) += 1;
+        let category = f.file_type.category();
         *by_category.entry(category.to_string()).or_insert(0) += 1;
     }
 
-    let total_size_u64 = u64::try_from(total_size.unwrap_or(0)).unwrap_or(0);
-
     Ok(FileStats {
-        total_files: u64::try_from(total_files).unwrap_or(0),
+        total_files,
         total_size: FileSize::new(total_size_u64),
         by_category,
         by_file_type,
-        deleted_files: u64::try_from(deleted_files).unwrap_or(0),
-        metadata_extracted: u64::try_from(metadata_extracted).unwrap_or(0),
-        metadata_pending: u64::try_from(metadata_pending).unwrap_or(0),
+        deleted_files,
+        metadata_extracted,
+        metadata_pending,
     })
 }
 
@@ -109,15 +119,26 @@ pub async fn get_stats(db: &SqlitePool, host_id: Option<&str>) -> Result<FileSta
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-pub async fn get_all_host_stats(db: &SqlitePool) -> Result<(FileStats, Vec<(String, FileStats)>)> {
+pub async fn get_all_host_stats(
+    db: &DatabaseConnection,
+) -> Result<(FileStats, Vec<(String, FileStats)>)> {
     let total = get_stats(db, None).await?;
 
-    let host_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT host_id FROM files WHERE is_deleted = 0 ORDER BY host_id",
-    )
-    .fetch_all(db)
-    .await
-    .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+    let rows = db
+        .query_all(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT DISTINCT host_id FROM files WHERE is_deleted = 0 ORDER BY host_id".to_string(),
+        ))
+        .await
+        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+
+    let mut host_ids = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let hid: String = row
+            .try_get("", "host_id")
+            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+        host_ids.push(hid);
+    }
 
     let mut per_host = Vec::with_capacity(host_ids.len());
     for hid in &host_ids {

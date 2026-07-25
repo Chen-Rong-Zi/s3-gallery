@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 
-use sqlx::SqlitePool;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder};
 
-use crate::db::models::FileEntry;
+use crate::entity::file;
 use crate::error::Result;
+use crate::error::S3GalleryError;
 use crate::types::FileSize;
 
 /// A node in the directory tree.
@@ -30,8 +31,19 @@ pub struct TreeNode {
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn build_tree(db: &SqlitePool, host_id: &str, root_prefix: &str) -> Result<TreeNode> {
-    let files = FileEntry::list_by_prefix(db, host_id, root_prefix).await?;
+pub async fn build_tree(
+    db: &DatabaseConnection,
+    host_id: &str,
+    root_prefix: &str,
+) -> Result<TreeNode> {
+    let files = file::Entity::find()
+        .filter(file::Column::HostId.eq(host_id))
+        .filter(file::Column::IsDeleted.eq(false))
+        .filter(file::Column::Key.starts_with(root_prefix))
+        .order_by(file::Column::Key, Order::Asc)
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     let effective_prefix = if root_prefix.is_empty() {
         String::new()
@@ -70,15 +82,15 @@ pub async fn build_tree(db: &SqlitePool, host_id: &str, root_prefix: &str) -> Re
     );
 
     for file in &files {
-        let key = &file.key;
-        if !key.starts_with(&effective_prefix) && !key.is_empty() {
+        let key_str = file.key.as_str();
+        if !key_str.starts_with(&effective_prefix) && !key_str.is_empty() {
             continue;
         }
 
-        let remaining = if key.starts_with(&effective_prefix) {
-            &key[effective_prefix.len()..]
+        let remaining = if key_str.starts_with(&effective_prefix) {
+            &key_str[effective_prefix.len()..]
         } else {
-            key
+            key_str
         };
 
         if remaining.is_empty() {
@@ -120,14 +132,14 @@ pub async fn build_tree(db: &SqlitePool, host_id: &str, root_prefix: &str) -> Re
             parent_path = new_path;
         }
 
-        if let Some(node) = node_map.get_mut(key) {
+        if let Some(node) = node_map.get_mut(key_str) {
             node.is_directory = false;
-            let size = u64::try_from(file.size).unwrap_or(0);
+            let size = file.size.as_u64();
             node.total_size = size;
             node.file_count = 1;
         }
 
-        let file_size = u64::try_from(file.size).unwrap_or(0);
+        let file_size = file.size.as_u64();
 
         if let Some(root_node) = node_map.get_mut(&root_path) {
             root_node.total_size += file_size;

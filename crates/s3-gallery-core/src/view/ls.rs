@@ -1,13 +1,13 @@
 //! Directory listing functionality.
 
 use std::collections::HashSet;
-use std::str::FromStr;
 
-use sqlx::SqlitePool;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder};
 
-use crate::db::models::DirSizeEntry;
-use crate::db::models::FileEntry;
+use crate::entity::dir_size;
+use crate::entity::file;
 use crate::error::Result;
+use crate::error::S3GalleryError;
 use crate::types::{FileSize, FileType, SortField, SortOrder};
 
 /// A single entry in a directory listing.
@@ -39,12 +39,11 @@ impl LsEntry {
         }
     }
 
-    fn from_file(file: &FileEntry, name: String) -> Result<Self> {
-        let file_type = FileType::from_str(&file.file_type).unwrap_or(FileType::Unknown);
-        let size = u64::try_from(file.size).unwrap_or(0);
+    fn from_file(file: &file::Model, name: String) -> Result<Self> {
+        let size = file.size.as_u64();
         Ok(Self {
             name,
-            file_type,
+            file_type: file.file_type.clone(),
             size: FileSize::new(size),
             file_count: 0,
             last_modified: file.last_modified.clone(),
@@ -59,13 +58,20 @@ impl LsEntry {
 ///
 /// Returns an error if the database query fails.
 pub async fn list_directory(
-    db: &SqlitePool,
+    db: &DatabaseConnection,
     host_id: &str,
     prefix: &str,
     sort_by: SortField,
     sort_order: SortOrder,
 ) -> Result<Vec<LsEntry>> {
-    let files = FileEntry::list_by_prefix(db, host_id, prefix).await?;
+    let files = file::Entity::find()
+        .filter(file::Column::HostId.eq(host_id))
+        .filter(file::Column::IsDeleted.eq(false))
+        .filter(file::Column::Key.starts_with(prefix))
+        .order_by(file::Column::Key, Order::Asc)
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     let effective_prefix = if prefix.is_empty() {
         String::new()
@@ -77,7 +83,7 @@ pub async fn list_directory(
     let mut file_entries = Vec::new();
 
     for file in files {
-        let key = &file.key;
+        let key = file.key.as_str();
         if !key.starts_with(&effective_prefix) {
             continue;
         }
@@ -96,12 +102,17 @@ pub async fn list_directory(
     }
 
     // Fetch directory sizes from dir_sizes table
-    let dir_sizes = DirSizeEntry::list_by_prefix(db, host_id, prefix)
+    let dir_sizes = dir_size::Entity::find()
+        .filter(dir_size::Column::HostId.eq(host_id))
+        .filter(dir_size::Column::DirPath.ne(prefix))
+        .filter(dir_size::Column::DirPath.like(format!("{}%", prefix)))
+        .order_by(dir_size::Column::DirPath, Order::Asc)
+        .all(db)
         .await
         .unwrap_or_default();
     let size_map: std::collections::HashMap<String, (i64, i64)> = dir_sizes
         .iter()
-        .map(|d| (d.dir_path.clone(), (d.total_size, d.total_files)))
+        .map(|d| (d.dir_path.to_string(), (d.total_size, d.total_files)))
         .collect();
 
     let mut entries = Vec::new();

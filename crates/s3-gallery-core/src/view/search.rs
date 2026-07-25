@@ -1,9 +1,10 @@
 //! Search functionality.
 
-use sqlx::SqlitePool;
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
 
 use crate::db::models::FileEntry;
 use crate::error::Result;
+use crate::error::S3GalleryError;
 
 /// Search results containing matching files.
 #[derive(Debug, Clone)]
@@ -19,17 +20,59 @@ pub struct SearchResult {
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn search_by_name(db: &SqlitePool, host_id: &str, query: &str) -> Result<SearchResult> {
+pub async fn search_by_name(
+    db: &DatabaseConnection,
+    host_id: &str,
+    query: &str,
+) -> Result<SearchResult> {
     let pattern = format!("%{query}%");
 
-    let files: Vec<FileEntry> = sqlx::query_as(
-        "SELECT * FROM files WHERE host_id = ? AND key LIKE ? AND is_deleted = 0 ORDER BY key",
-    )
-    .bind(host_id)
-    .bind(pattern)
-    .fetch_all(db)
-    .await
-    .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+    let rows = db
+        .query_all(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT * FROM files WHERE host_id = ? AND key LIKE ? AND is_deleted = 0 ORDER BY key",
+            [host_id.into(), pattern.into()],
+        ))
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+
+    let files = rows
+        .iter()
+        .map(|row| {
+            Ok(FileEntry {
+                host_id: row
+                    .try_get::<String>("", "host_id")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                key: row
+                    .try_get::<String>("", "key")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                etag: row
+                    .try_get::<String>("", "etag")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                size: row
+                    .try_get::<i64>("", "size")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                last_modified: row
+                    .try_get::<String>("", "last_modified")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                content_type: row
+                    .try_get::<Option<String>>("", "content_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                file_type: row
+                    .try_get::<String>("", "file_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                metadata_state: row
+                    .try_get::<String>("", "metadata_state")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                effective_date: row
+                    .try_get::<String>("", "effective_date")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                is_deleted: row
+                    .try_get::<bool>("", "is_deleted")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()?;
 
     let total_count = u64::try_from(files.len()).unwrap_or(0);
 
@@ -41,19 +84,61 @@ pub async fn search_by_name(db: &SqlitePool, host_id: &str, query: &str) -> Resu
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn search_by_tag(db: &SqlitePool, host_id: &str, tag_name: &str) -> Result<SearchResult> {
-    let files: Vec<FileEntry> = sqlx::query_as(
-        "SELECT f.* FROM files f
-         INNER JOIN file_tags ft ON f.key = ft.file_key
-         INNER JOIN tags t ON ft.tag_id = t.tag_id
-         WHERE t.tag_name = ? AND f.host_id = ? AND f.is_deleted = 0
-         ORDER BY f.key",
-    )
-    .bind(tag_name)
-    .bind(host_id)
-    .fetch_all(db)
-    .await
-    .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+pub async fn search_by_tag(
+    db: &DatabaseConnection,
+    host_id: &str,
+    tag_name: &str,
+) -> Result<SearchResult> {
+    let rows = db
+        .query_all(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT f.* FROM files f
+             INNER JOIN file_tags ft ON f.key = ft.file_key
+             INNER JOIN tags t ON ft.tag_id = t.tag_id
+             WHERE t.tag_name = ? AND f.host_id = ? AND f.is_deleted = 0
+             ORDER BY f.key",
+            [tag_name.into(), host_id.into()],
+        ))
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+
+    let files = rows
+        .iter()
+        .map(|row| {
+            Ok(FileEntry {
+                host_id: row
+                    .try_get::<String>("", "host_id")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                key: row
+                    .try_get::<String>("", "key")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                etag: row
+                    .try_get::<String>("", "etag")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                size: row
+                    .try_get::<i64>("", "size")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                last_modified: row
+                    .try_get::<String>("", "last_modified")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                content_type: row
+                    .try_get::<Option<String>>("", "content_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                file_type: row
+                    .try_get::<String>("", "file_type")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                metadata_state: row
+                    .try_get::<String>("", "metadata_state")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                effective_date: row
+                    .try_get::<String>("", "effective_date")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+                is_deleted: row
+                    .try_get::<bool>("", "is_deleted")
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?,
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, S3GalleryError>>()?;
 
     let total_count = u64::try_from(files.len()).unwrap_or(0);
 
