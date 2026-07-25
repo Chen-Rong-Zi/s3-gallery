@@ -19,6 +19,8 @@ tower = { version = "0.5", features = ["buffer", "timeout", "limit", "make", "ut
 kamadak-exif = "0.5"
 image = "0.25"
 minijinja = "2"
+sea-orm = { version = "1", features = ["sqlx-sqlite", "runtime-tokio-rustls", "macros"] }
+sea-orm-migration = { version = "1", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
 
 [dev-dependencies]
 tempfile = "3"

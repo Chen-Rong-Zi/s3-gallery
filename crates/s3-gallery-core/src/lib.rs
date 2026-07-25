@@ -15,6 +15,7 @@
 pub mod classify;
 pub mod config;
 pub mod db;
+pub mod entity;
 pub mod error;
 pub mod extractor;
 pub mod s3;
