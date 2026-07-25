@@ -469,7 +469,7 @@ impl MigrationTrait for InitialMigration {
             manager
                 .drop_table(Table::drop().table(Alias::new(*table)).to_owned())
                 .await
-                .ok();
+                .map_err(|e| DbErr::Custom(format!("Failed to drop table {table}: {e}")))?;
         }
         Ok(())
     }
