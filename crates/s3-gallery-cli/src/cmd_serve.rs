@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use sea_orm::DatabaseConnection;
+use sqlx::SqlitePool;
 use tokio::net::TcpListener;
 use tower::layer::Layer;
 
@@ -43,17 +45,17 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
     }
 
     // Create pool, run migrations
-    let pool = create_pool(db_path).await?;
-    run_migrations(&pool).await?;
+    let db = create_pool(db_path).await?;
+    run_migrations(db.get_sqlite_connection_pool()).await?;
 
     // Read all hosts from DB, or discover from files table
-    let mut hosts = HostConfigEntry::list_all(&pool).await?;
+    let mut hosts = HostConfigEntry::list_all(db.get_sqlite_connection_pool()).await?;
     if hosts.is_empty() {
         // No host_config entries — probe files table for distinct host_ids
         tracing::info!("no hosts in host_config, probing files table");
         let rows: Vec<String> =
             sqlx::query_scalar("SELECT DISTINCT host_id FROM files ORDER BY host_id")
-                .fetch_all(&pool)
+                .fetch_all(db.get_sqlite_connection_pool())
                 .await
                 .map_err(|e| {
                     S3GalleryError::DbError(format!("Failed to probe files table: {e}"))
@@ -106,7 +108,11 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
     let core_s3 = S3Service::new(Arc::new(RealS3Client::from_config(&config)));
 
     // Traffic recorder with channel-based batch writer
-    let handle = spawn_batch_writer(pool.clone(), 5, 100);
+    // spawn_batch_writer needs a raw SqlitePool, so create one separately
+    let sqlite_pool = SqlitePool::connect(&format!("sqlite:{}?mode=rwc", db_path.display()))
+        .await
+        .map_err(|e| S3GalleryError::DbError(format!("Failed to create pool for batch writer: {e}")))?;
+    let handle = spawn_batch_writer(sqlite_pool, 5, 100);
     let recorder = Arc::new(TrafficRecorder::new(handle.sender.clone()));
 
     // Apply layers: LogLayer wraps core_s3
@@ -126,7 +132,7 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
     // Build AppState
     let app_state = AppState {
         templates: Arc::new(env),
-        db: pool,
+        db,
         hosts,
         s3_stack,
         traffic_recorder: Some(recorder),

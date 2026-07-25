@@ -82,7 +82,7 @@ pub async fn file_detail(
         );
     }
 
-    let pool = &state.db;
+    let pool = state.db.get_sqlite_connection_pool();
 
     // Fetch the file entry by its key.
     let file = match FileEntry::get_by_key(pool, host_id, &key).await {

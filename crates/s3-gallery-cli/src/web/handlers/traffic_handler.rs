@@ -63,7 +63,7 @@ pub async fn traffic_live(
          WHERE recorded_at > datetime('now', '-10 seconds') \
          GROUP BY business",
     )
-    .fetch_all(&state.db)
+    .fetch_all(state.db.get_sqlite_connection_pool())
     .await
     {
         Ok(rows) => rows,

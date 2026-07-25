@@ -4,14 +4,14 @@ use s3_gallery_core::db::models::HostConfigEntry;
 use s3_gallery_core::s3::layers::TrafficLayer;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
-use sqlx::SqlitePool;
+use sea_orm::DatabaseConnection;
 use tower::ServiceBuilder;
 
 /// Shared application state for multi-host serving.
 #[derive(Clone)]
 pub struct AppState {
     pub templates: Arc<minijinja::Environment<'static>>,
-    pub db: SqlitePool,
+    pub db: DatabaseConnection,
     /// All hosts from the database.
     pub hosts: Vec<HostConfigEntry>,
     /// Tower-composed S3 service stack.

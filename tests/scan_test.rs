@@ -11,8 +11,8 @@ use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::mock::MockS3Client;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::scan::scanner::{run_scan, ScanConfig};
-use s3_gallery_core::types::{BucketName, ObjectKey};
-use sqlx::SqlitePool;
+use s3_gallery_core::types::{BucketName, Prefix};
+use sea_orm::DatabaseConnection;
 
 mod common;
 
@@ -23,19 +23,19 @@ mod common;
 /// Build a ScanConfig for testing.
 fn make_scan_config(
     s3: Arc<dyn S3Client>,
-    db: SqlitePool,
+    db: DatabaseConnection,
     bucket: BucketName,
     prefix: &str,
 ) -> ScanConfig {
-    // ObjectKey must be non-empty.  The test objects are placed under "test/"
-    // so we use "test/" as the listing prefix.
+    // The test objects are placed under "test/" so we use "test/" as the listing prefix.
     let listing_prefix = if prefix.is_empty() { "test/" } else { prefix };
     ScanConfig {
         host_id: "test-host".to_string(),
         s3: S3Service::new(s3),
-        db,
+        db: db.get_sqlite_connection_pool().clone(),
+        sea_db: db,
         bucket,
-        prefix: ObjectKey::new(listing_prefix).expect("valid prefix"),
+        prefix: Prefix::new(listing_prefix).expect("valid prefix"),
         concurrency: 10,
         extract_metadata: false,
         generate_thumbnails: false,
@@ -68,11 +68,11 @@ fn mock_s3_with_fixtures(objects: Vec<(&str, &[u8])>) -> Result<MockS3Client> {
 
 #[tokio::test]
 async fn test_scan_empty_bucket() -> Result<()> {
-    let (pool, _dir) = common::setup_test_db().await?;
+    let (db, _dir) = common::setup_test_db().await?;
     let s3 = Arc::new(MockS3Client::new()) as Arc<dyn S3Client>;
     let bucket = common::test_bucket()?;
 
-    let config = make_scan_config(s3, pool, bucket, "test");
+    let config = make_scan_config(s3, db, bucket, "test");
     let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 0);
@@ -84,30 +84,31 @@ async fn test_scan_empty_bucket() -> Result<()> {
 
 #[tokio::test]
 async fn test_scan_discovers_new_objects() -> Result<()> {
-    let (pool, _dir) = common::setup_test_db().await?;
+    let (db, _dir) = common::setup_test_db().await?;
     let s3 = mock_s3_with_fixtures(vec![
         ("test/photos/img001.jpg", b"jpeg data"),
         ("test/photos/img002.jpg", b"jpeg data"),
         ("test/docs/readme.txt", b"text data"),
     ])?;
     let bucket = common::test_bucket()?;
+    let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
-    let config = make_scan_config(Arc::new(s3), pool.clone(), bucket, "");
+    let config = make_scan_config(Arc::new(s3), db, bucket, "");
     let result = run_scan(config, "".to_owned()).await?;
 
     assert_eq!(result.total_files, 3, "should discover 3 objects");
     assert_eq!(result.new_files, 3, "all 3 should be new");
 
     // Verify DB entries were created.
-    let count = FileEntry::count(&pool, "test-host").await?;
+    let count = FileEntry::count(&sqlite_pool, "test-host").await?;
     assert_eq!(count, 3);
 
     // Verify specific entries.
-    let entry = FileEntry::get_by_key(&pool, "test-host", "test/photos/img001.jpg").await?;
+    let entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/photos/img001.jpg").await?;
     assert_eq!(entry.file_type, "jpeg");
     assert!(!entry.is_deleted);
 
-    let entry = FileEntry::get_by_key(&pool, "test-host", "test/docs/readme.txt").await?;
+    let entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/docs/readme.txt").await?;
     // "txt" is not a recognized file type, so it's classified as "unknown".
     assert_eq!(entry.file_type, "unknown");
     Ok(())
@@ -115,8 +116,9 @@ async fn test_scan_discovers_new_objects() -> Result<()> {
 
 #[tokio::test]
 async fn test_scan_detects_modified_objects() -> Result<()> {
-    let (pool, _dir) = common::setup_test_db().await?;
+    let (db, _dir) = common::setup_test_db().await?;
     let bucket = common::test_bucket()?;
+    let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
     // Insert a file entry with an old etag.
     let file = FileEntry {
@@ -131,12 +133,12 @@ async fn test_scan_detects_modified_objects() -> Result<()> {
         effective_date: "".to_string(),
         is_deleted: false,
     };
-    FileEntry::insert(&pool, &file).await?;
+    FileEntry::insert(&sqlite_pool, &file).await?;
 
     // The mock S3 generates a random etag on insert, so the object will have
     // a different etag than what's in the DB, triggering a "changed" detection.
     let s3 = mock_s3_with_fixtures(vec![("test/photos/img001.jpg", b"updated jpeg data")])?;
-    let config = make_scan_config(Arc::new(s3), pool.clone(), bucket, "");
+    let config = make_scan_config(Arc::new(s3), db, bucket, "");
     let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 1);
@@ -148,7 +150,7 @@ async fn test_scan_detects_modified_objects() -> Result<()> {
     assert_eq!(result.deleted_files, 0);
 
     // Verify the etag was updated in the DB.
-    let updated = FileEntry::get_by_key(&pool, "test-host", "test/photos/img001.jpg").await?;
+    let updated = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/photos/img001.jpg").await?;
     assert_ne!(updated.etag, "old-etag", "etag should have been updated");
     assert_eq!(
         updated.size, 17,
@@ -159,8 +161,9 @@ async fn test_scan_detects_modified_objects() -> Result<()> {
 
 #[tokio::test]
 async fn test_scan_detects_deleted_objects() -> Result<()> {
-    let (pool, _dir) = common::setup_test_db().await?;
+    let (db, _dir) = common::setup_test_db().await?;
     let bucket = common::test_bucket()?;
+    let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
     // Insert a file that exists in the DB but not in S3.
     let file = FileEntry {
@@ -175,10 +178,10 @@ async fn test_scan_detects_deleted_objects() -> Result<()> {
         effective_date: "".to_string(),
         is_deleted: false,
     };
-    FileEntry::insert(&pool, &file).await?;
+    FileEntry::insert(&sqlite_pool, &file).await?;
 
     let s3 = mock_s3_with_fixtures(vec![])?; // empty — no objects
-    let config = make_scan_config(Arc::new(s3), pool.clone(), bucket, "");
+    let config = make_scan_config(Arc::new(s3), db, bucket, "");
     let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 0);
@@ -190,15 +193,16 @@ async fn test_scan_detects_deleted_objects() -> Result<()> {
     );
 
     // Verify the file is soft-deleted.
-    let entry = FileEntry::get_by_key(&pool, "test-host", "test/photos/ghost.txt").await?;
+    let entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/photos/ghost.txt").await?;
     assert!(entry.is_deleted);
     Ok(())
 }
 
 #[tokio::test]
 async fn test_scan_mixed_new_changed_deleted() -> Result<()> {
-    let (pool, _dir) = common::setup_test_db().await?;
+    let (db, _dir) = common::setup_test_db().await?;
     let bucket = common::test_bucket()?;
+    let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
     // Pre-populate DB with one unchanged, one that will be "changed" (different
     // etag), and one that will be "deleted" (not in S3).
@@ -241,7 +245,7 @@ async fn test_scan_mixed_new_changed_deleted() -> Result<()> {
         },
     ];
     for f in &db_files {
-        FileEntry::insert(&pool, f).await?;
+        FileEntry::insert(&sqlite_pool, f).await?;
     }
 
     // S3 has: unchanged.txt, changed.txt, and new.txt (not in DB).
@@ -252,7 +256,7 @@ async fn test_scan_mixed_new_changed_deleted() -> Result<()> {
         ("test/changed.txt", b"data"),
         ("test/new.txt", b"new data"),
     ])?;
-    let config = make_scan_config(Arc::new(s3), pool.clone(), bucket, "");
+    let config = make_scan_config(Arc::new(s3), db, bucket, "");
     let result = run_scan(config, String::new()).await?;
 
     // At minimum we should see:
@@ -261,11 +265,11 @@ async fn test_scan_mixed_new_changed_deleted() -> Result<()> {
     assert_eq!(result.deleted_files, 1, "deleted.txt was removed");
 
     // Verify new.txt was inserted.
-    let new_entry = FileEntry::get_by_key(&pool, "test-host", "test/new.txt").await?;
+    let new_entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/new.txt").await?;
     assert!(!new_entry.is_deleted);
 
     // Verify deleted.txt was soft-deleted.
-    let deleted_entry = FileEntry::get_by_key(&pool, "test-host", "test/deleted.txt").await?;
+    let deleted_entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/deleted.txt").await?;
     assert!(deleted_entry.is_deleted);
 
     Ok(())
@@ -273,10 +277,10 @@ async fn test_scan_mixed_new_changed_deleted() -> Result<()> {
 
 #[tokio::test]
 async fn test_scan_updates_scan_metadata() -> Result<()> {
-    let (pool, _dir) = common::setup_test_db().await?;
+    let (db, _dir) = common::setup_test_db().await?;
     let s3 = mock_s3_with_fixtures(vec![("test/a.jpg", b"data"), ("test/b.jpg", b"data")])?;
 
-    let config = make_scan_config(Arc::new(s3), pool.clone(), common::test_bucket()?, "");
+    let config = make_scan_config(Arc::new(s3), db, common::test_bucket()?, "");
     let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 2);
@@ -287,12 +291,13 @@ async fn test_scan_updates_scan_metadata() -> Result<()> {
 
 #[tokio::test]
 async fn test_scan_skips_s3_gallery_directory() -> Result<()> {
-    let (pool, _dir) = common::setup_test_db().await?;
+    let (db, _dir) = common::setup_test_db().await?;
     let s3 = mock_s3_with_fixtures(vec![
         ("test/photos/img.jpg", b"data"),
     ])?;
+    let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
-    let config = make_scan_config(Arc::new(s3), pool.clone(), common::test_bucket()?, "");
+    let config = make_scan_config(Arc::new(s3), db, common::test_bucket()?, "");
     let result = run_scan(config, String::new()).await?;
 
     // Only the non-.s3-gallery file should be counted.
@@ -303,7 +308,7 @@ async fn test_scan_skips_s3_gallery_directory() -> Result<()> {
     assert_eq!(result.new_files, 1);
 
     // Verify the photo file was recorded.
-    let entry = FileEntry::get_by_key(&pool, "test-host", "test/photos/img.jpg").await?;
+    let entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/photos/img.jpg").await?;
     assert!(!entry.is_deleted);
     Ok(())
 }

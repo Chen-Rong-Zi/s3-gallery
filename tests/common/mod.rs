@@ -19,24 +19,25 @@ use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
 use s3_gallery_core::s3::mock::MockS3Client;
 use s3_gallery_core::types::BucketName;
+use sea_orm::DatabaseConnection;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
 
-/// Create a temporary SQLite database, run migrations, and return the pool
+/// Create a temporary SQLite database, run migrations, and return the connection
 /// along with the temp directory handle (kept alive for the lifetime of the
 /// returned `TempDir`).
-pub async fn setup_test_db() -> Result<(SqlitePool, TempDir)> {
+pub async fn setup_test_db() -> Result<(DatabaseConnection, TempDir)> {
     let dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     let db_path = dir.path().join("test.db");
-    let pool = create_pool(&db_path).await?;
-    run_migrations(&pool).await?;
-    Ok((pool, dir))
+    let db = create_pool(&db_path).await?;
+    run_migrations(db.get_sqlite_connection_pool()).await?;
+    Ok((db, dir))
 }
 
 /// Seed the database with a known set of test files.
 ///
 /// Returns the number of files inserted.
-pub async fn seed_test_files(pool: &SqlitePool) -> Result<usize> {
+pub async fn seed_test_files(pool: &sqlx::SqlitePool) -> Result<usize> {
     let files = vec![
         FileEntry {
             host_id: "test-host".to_string(),

@@ -77,10 +77,8 @@ pub async fn gallery(
 
     tracing::info!(handler = "gallery", page = %page, tag = ?tag, "serving gallery");
 
-    let pool = &state.db;
-
     let (entries, has_more) = match timeline_gallery::get_timeline_gallery(
-        pool,
+        &state.db,
         params.host_id.as_deref(),
         page,
         GROUPS_PER_PAGE,
@@ -127,7 +125,7 @@ pub async fn gallery(
 
     // Fetch all tags for the filter dropdown
     let all_tags: Vec<serde_json::Value> =
-        match s3_gallery_core::view::tags::list_tags(pool, params.host_id.as_deref()).await {
+        match s3_gallery_core::view::tags::list_tags(&state.db, params.host_id.as_deref()).await {
             Ok(tags) => tags
                 .iter()
                 .map(|t| json!({ "name": t.tag_name, "type": t.tag_type }))

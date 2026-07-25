@@ -75,14 +75,12 @@ pub async fn search(
         }
     };
 
-    let pool = &state.db;
-
     let files = if let Some(ref query) = params.q {
         let query_trimmed = query.trim();
         if query_trimmed.is_empty() {
             Vec::new()
         } else {
-            match search_view::search_by_name(pool, &host_id, query_trimmed).await {
+            match search_view::search_by_name(&state.db, &host_id, query_trimmed).await {
                 Ok(result) => result.files,
                 Err(e) => {
                     tracing::error!(handler = "search", query = %query_trimmed, error = %e, "search by name failed");
@@ -101,7 +99,7 @@ pub async fn search(
         if tag_trimmed.is_empty() {
             Vec::new()
         } else {
-            match search_view::search_by_tag(pool, &host_id, tag_trimmed).await {
+            match search_view::search_by_tag(&state.db, &host_id, tag_trimmed).await {
                 Ok(result) => result.files,
                 Err(e) => {
                     tracing::error!(handler = "search", tag = %tag_trimmed, error = %e, "search by tag failed");

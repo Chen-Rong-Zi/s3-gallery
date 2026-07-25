@@ -33,7 +33,7 @@ pub async fn thumbnail(
 ) -> impl IntoResponse {
     tracing::info!(handler = "thumbnail", key = %key, "serving thumbnail");
 
-    let pool = &state.db;
+    let pool = state.db.get_sqlite_connection_pool();
 
     // Try the database cache first.
     match ThumbnailEntry::get(pool, &key).await {

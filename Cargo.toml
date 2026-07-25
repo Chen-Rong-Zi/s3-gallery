@@ -19,5 +19,6 @@ s3-gallery-core = { path = "crates/s3-gallery-core" }
 uuid = { version = "1", features = ["v4"] }
 aws-sdk-s3 = "1.138.1"
 aws-config = "1.5.0"
+sea-orm = { version = "1", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
 async-trait = "0.1"

@@ -73,7 +73,7 @@ pub async fn download(State(state): State<AppState>, Path(key): Path<String>) ->
         }
     };
 
-    let pool = &state.db;
+    let pool = state.db.get_sqlite_connection_pool();
 
     // Fetch file metadata from the database
     let file = match FileEntry::get_by_key(pool, host_id, full_key).await {

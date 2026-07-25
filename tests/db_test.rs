@@ -9,7 +9,7 @@ use s3_gallery_core::db::models::{
 use s3_gallery_core::db::pool::create_pool;
 use s3_gallery_core::db::schema::run_migrations;
 use s3_gallery_core::error::{Result, S3GalleryError};
-use sqlx::SqlitePool;
+use sea_orm::DatabaseConnection;
 use tempfile::TempDir;
 
 mod common;
@@ -19,16 +19,16 @@ mod common;
 // ---------------------------------------------------------------------------
 
 /// Create a temporary database with migrations applied.
-async fn setup_db() -> Result<(SqlitePool, TempDir)> {
+async fn setup_db() -> Result<(DatabaseConnection, TempDir)> {
     let dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     let db_path = dir.path().join("test.db");
-    let pool = create_pool(&db_path).await?;
-    run_migrations(&pool).await?;
-    Ok((pool, dir))
+    let db = create_pool(&db_path).await?;
+    run_migrations(db.get_sqlite_connection_pool()).await?;
+    Ok((db, dir))
 }
 
 /// Insert a minimal file entry for use as a foreign key target.
-async fn insert_base_file(pool: &SqlitePool) -> Result<()> {
+async fn insert_base_file(pool: &sqlx::SqlitePool) -> Result<()> {
     FileEntry::insert(
         pool,
         &FileEntry {
@@ -53,12 +53,13 @@ async fn insert_base_file(pool: &SqlitePool) -> Result<()> {
 
 #[tokio::test]
 async fn test_schema_migration_creates_all_tables() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
@@ -92,15 +93,16 @@ async fn test_schema_migration_creates_all_tables() -> Result<()> {
 
 #[tokio::test]
 async fn test_migration_is_idempotent() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     // Run migrations twice.
-    run_migrations(&pool).await?;
+    run_migrations(pool).await?;
 
     // Tables should still exist.
     let tables: Vec<String> =
         sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-            .fetch_all(&pool)
+            .fetch_all(pool)
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
@@ -111,10 +113,11 @@ async fn test_migration_is_idempotent() -> Result<()> {
 
 #[tokio::test]
 async fn test_wal_mode_is_enabled() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode;")
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
@@ -128,10 +131,11 @@ async fn test_wal_mode_is_enabled() -> Result<()> {
 
 #[tokio::test]
 async fn test_foreign_keys_are_enabled() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     let fk_enabled: i32 = sqlx::query_scalar("PRAGMA foreign_keys;")
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
@@ -141,10 +145,11 @@ async fn test_foreign_keys_are_enabled() -> Result<()> {
 
 #[tokio::test]
 async fn test_schema_version_is_set() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     let version: i64 = sqlx::query_scalar("SELECT db_schema_version FROM scan_metadata LIMIT 1")
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
@@ -158,7 +163,8 @@ async fn test_schema_version_is_set() -> Result<()> {
 
 #[tokio::test]
 async fn test_host_config_full_crud() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     let entry = HostConfigEntry {
         host_id: "integration-host".to_string(),
@@ -198,7 +204,8 @@ async fn test_host_config_full_crud() -> Result<()> {
 
 #[tokio::test]
 async fn test_host_config_get_not_found() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
     let result = HostConfigEntry::get(&pool, "nonexistent").await;
     assert!(result.is_err());
     assert!(matches!(result, Err(S3GalleryError::NotFound(_))));
@@ -211,7 +218,8 @@ async fn test_host_config_get_not_found() -> Result<()> {
 
 #[tokio::test]
 async fn test_file_entry_full_crud() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     let entry = FileEntry {
         host_id: "test-host".to_string(),
@@ -256,7 +264,8 @@ async fn test_file_entry_full_crud() -> Result<()> {
 
 #[tokio::test]
 async fn test_file_entry_list_by_prefix() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     let files = vec![
         FileEntry {
@@ -310,7 +319,8 @@ async fn test_file_entry_list_by_prefix() -> Result<()> {
 
 #[tokio::test]
 async fn test_file_entry_list_by_file_type() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     let files = vec![
         FileEntry {
@@ -350,7 +360,8 @@ async fn test_file_entry_list_by_file_type() -> Result<()> {
 
 #[tokio::test]
 async fn test_file_entry_count() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     assert_eq!(FileEntry::count(&pool, "test-host").await?, 0);
 
@@ -380,7 +391,8 @@ async fn test_file_entry_count() -> Result<()> {
 
 #[tokio::test]
 async fn test_file_entry_get_not_found() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
     let result = FileEntry::get_by_key(&pool, "test-host", "nonexistent").await;
     assert!(result.is_err());
     assert!(matches!(result, Err(S3GalleryError::NotFound(_))));
@@ -393,7 +405,8 @@ async fn test_file_entry_get_not_found() -> Result<()> {
 
 #[tokio::test]
 async fn test_metadata_entry_full_crud() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
     insert_base_file(&pool).await?;
 
     let meta = MetadataEntry {
@@ -432,7 +445,8 @@ async fn test_metadata_entry_full_crud() -> Result<()> {
 
 #[tokio::test]
 async fn test_thumbnail_entry_full_crud() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
     insert_base_file(&pool).await?;
 
     let thumb = ThumbnailEntry {
@@ -482,7 +496,8 @@ async fn test_thumbnail_entry_full_crud() -> Result<()> {
 
 #[tokio::test]
 async fn test_tag_entry_full_crud() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     let tag = TagEntry {
         tag_id: 0,
@@ -517,7 +532,8 @@ async fn test_tag_entry_full_crud() -> Result<()> {
 
 #[tokio::test]
 async fn test_file_tag_full_crud() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
     insert_base_file(&pool).await?;
 
     // Create tag
@@ -558,7 +574,8 @@ async fn test_file_tag_full_crud() -> Result<()> {
 
 #[tokio::test]
 async fn test_scan_metadata_crud() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     // Initial state after migration
     let fetched = ScanMetadata::get(&pool, "default").await?;
@@ -593,7 +610,8 @@ async fn test_scan_metadata_crud() -> Result<()> {
 
 #[tokio::test]
 async fn test_metadata_insert_without_file() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     // Metadata no longer has a foreign key constraint on files, so inserting
     // metadata without a corresponding file entry should succeed.
@@ -617,7 +635,8 @@ async fn test_metadata_insert_without_file() -> Result<()> {
 async fn test_cascade_delete_on_file_removal() -> Result<()> {
     // Metadata no longer has a foreign key constraint on files, so soft-deleting
     // a file does not cascade to metadata.
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
     insert_base_file(&pool).await?;
 
     // Insert metadata referencing the file.
@@ -655,23 +674,24 @@ async fn test_create_pool_creates_db_file() -> Result<()> {
     let db_path = dir.path().join("newly_created.db");
     assert!(!db_path.exists());
 
-    let pool = create_pool(&db_path).await?;
+    let db = create_pool(&db_path).await?;
 
     // After creating the pool, the file should exist.
     assert!(db_path.exists(), "pool creation should create the db file");
 
     // Clean up.
-    pool.close().await;
+    db.close().await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     Ok(())
 }
 
 #[tokio::test]
 async fn test_pool_accepts_multiple_connections() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     // Run a query on the pool to verify it works.
     let result: i64 = sqlx::query_scalar("SELECT 1 + 1")
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
@@ -681,12 +701,13 @@ async fn test_pool_accepts_multiple_connections() -> Result<()> {
 
 #[tokio::test]
 async fn test_all_indexes_created() -> Result<()> {
-    let (pool, _dir) = setup_db().await?;
+    let (db, _dir) = setup_db().await?;
+    let pool = db.get_sqlite_connection_pool();
 
     let indexes: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type='index' AND name IS NOT NULL ORDER BY name",
     )
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 

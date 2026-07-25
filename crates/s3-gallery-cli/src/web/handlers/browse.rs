@@ -134,16 +134,15 @@ pub async fn browse(
 
     tracing::info!(handler = "browse", path = %path, sort_by = %sort_field, sort_order = %sort_order, "listing directory");
 
-    let pool = &state.db;
-
     // If path is empty, show root-level host directories
     if path.is_empty() {
+        let sqlite_pool = state.db.get_sqlite_connection_pool();
         // Fetch per-host totals from files table
         let host_totals: Vec<(String, i64, i64)> = sqlx::query_as(
             "SELECT host_id, COUNT(*) as total_files, COALESCE(SUM(size), 0) as total_size \
              FROM files WHERE is_deleted = 0 GROUP BY host_id ORDER BY host_id",
         )
-        .fetch_all(pool)
+        .fetch_all(sqlite_pool)
         .await
         .unwrap_or_default();
         let total_map: std::collections::HashMap<String, (i64, i64)> = host_totals
@@ -206,7 +205,7 @@ pub async fn browse(
     }
 
     // Fetch directory listing using ls module directly
-    let entries = match ls::list_directory(pool, host_id, path, sort_field, sort_order).await {
+    let entries = match ls::list_directory(&state.db, host_id, path, sort_field, sort_order).await {
         Ok(entries) => entries,
         Err(e) => {
             tracing::error!(handler = "browse", path = %path, sort_by = %sort_field, error = %e, "failed to list directory");
