@@ -212,18 +212,6 @@ impl ObjectKey {
         &self.0
     }
 
-    /// Returns the parent directory key (everything before the last `/`),
-    /// or `None` if there is no `/` or the parent would be empty.
-    pub fn parent(&self) -> Option<ObjectKey> {
-        let pos = self.0.rfind('/')?;
-        if pos == 0 {
-            // Leading slash means parent would be empty — not a valid key.
-            return None;
-        }
-        let parent_str = self.0.get(..pos)?;
-        Some(Self(parent_str.to_string()))
-    }
-
     /// Returns the portion after the last `/`, or `None` if the key ends
     /// with `/`.  If there is no `/`, returns the entire key.
     pub fn file_name(&self) -> Option<&str> {
@@ -1264,7 +1252,8 @@ impl S3Path for Prefix {
         }
         let trimmed = self.0.trim_end_matches('/');
         let pos = trimmed.rfind('/')?;
-        Some(Prefix(trimmed[..=pos].to_string()))
+        let parent_str = trimmed.get(..=pos)?;
+        Some(Prefix(parent_str.to_string()))
     }
 
     fn last_segment(&self) -> Option<&str> {
@@ -1272,14 +1261,22 @@ impl S3Path for Prefix {
             return None;
         }
         let trimmed = self.0.trim_end_matches('/');
-        let pos = trimmed.rfind('/')?;
-        Some(&trimmed[pos + 1..])
+        if trimmed.is_empty() {
+            return None;
+        }
+        let pos = trimmed.rfind('/');
+        match pos {
+            Some(p) => Some(&trimmed[p + 1..]),
+            None => Some(trimmed),
+        }
     }
 
+    #[allow(clippy::expect_used)]
     fn join_key(&self, name: &str) -> ObjectKey {
         ObjectKey::new(format!("{}{}", self.0, name)).expect("valid key")
     }
 
+    #[allow(clippy::expect_used)]
     fn join_dir(&self, name: &str) -> Prefix {
         Prefix::new(format!("{}{}/", self.0, name)).expect("valid prefix")
     }
@@ -1292,17 +1289,20 @@ impl S3Path for ObjectKey {
 
     fn parent(&self) -> Option<Prefix> {
         let pos = self.0.rfind('/')?;
-        Some(Prefix(self.0[..=pos].to_string()))
+        let parent_str = self.0.get(..=pos)?;
+        Some(Prefix(parent_str.to_string()))
     }
 
     fn last_segment(&self) -> Option<&str> {
         self.file_name()
     }
 
+    #[allow(clippy::expect_used)]
     fn join_key(&self, name: &str) -> ObjectKey {
         ObjectKey::new(format!("{}{}", self.0, name)).expect("valid key")
     }
 
+    #[allow(clippy::expect_used)]
     fn join_dir(&self, name: &str) -> Prefix {
         Prefix::new(format!("{}{}/", self.0, name)).expect("valid prefix")
     }
@@ -1485,7 +1485,7 @@ mod tests {
         let key = ObjectKey::new("a/b/c")?;
         let parent = key.parent();
         assert!(parent.is_some());
-        assert_eq!(parent.unwrap().as_str(), "a/b");
+        assert_eq!(parent.unwrap().as_str(), "a/b/");
         Ok(())
     }
 
@@ -1494,7 +1494,7 @@ mod tests {
         let key = ObjectKey::new("a/b")?;
         let parent = key.parent();
         assert!(parent.is_some());
-        assert_eq!(parent.unwrap().as_str(), "a");
+        assert_eq!(parent.unwrap().as_str(), "a/");
         Ok(())
     }
 
