@@ -16,6 +16,7 @@ use tower::util::BoxService;
 use tower::{Layer, Service};
 
 use crate::error::S3GalleryError;
+use crate::s3::traffic_persist::BatchWriterHandle;
 use crate::scan::pipeline::{
     AggregateReport, ScanRequest, ScanResponse, SizeRanges, TrafficByOperation,
 };
@@ -24,12 +25,19 @@ use crate::scan::scan_objects::ScanObjectEntry;
 /// AggregateLayer wraps an inner service with report generation.
 pub struct AggregateLayer {
     db: SqlitePool,
+    batch_writer: Arc<tokio::sync::Mutex<Option<BatchWriterHandle>>>,
 }
 
 impl AggregateLayer {
     /// Create a new `AggregateLayer`.
-    pub fn new(db: SqlitePool) -> Self {
-        Self { db }
+    ///
+    /// Pass the `BatchWriterHandle` from `spawn_batch_writer()` to enable
+    /// flushing buffered traffic records before generating the report.
+    pub fn new(db: SqlitePool, batch_writer: Option<BatchWriterHandle>) -> Self {
+        Self {
+            db,
+            batch_writer: Arc::new(tokio::sync::Mutex::new(batch_writer)),
+        }
     }
 }
 
@@ -44,9 +52,11 @@ where
 
     fn layer(&self, inner: I) -> Self::Service {
         let db = self.db.clone();
+        let batch_writer = self.batch_writer.clone();
         let inner = Arc::new(Mutex::new(inner));
         BoxService::new(service_fn(move |req: ScanRequest| {
             let db = db.clone();
+            let batch_writer = batch_writer.clone();
             let inner = inner.clone();
             let start = Instant::now();
             let scan_start = Utc::now();
@@ -57,11 +67,16 @@ where
                     inner.call(req).await?
                 };
 
+                // 2. Flush batch writer to ensure all traffic is in DB
+                if let Some(handle) = batch_writer.lock().await.as_ref() {
+                    handle.flush().await;
+                }
+
                 let scan_end = Utc::now();
                 let scan_start_str = scan_start.to_rfc3339();
                 let scan_end_str = scan_end.to_rfc3339();
 
-                // 2. Query traffic from DB for this scan period
+                // 3. Query traffic from DB for this scan period
                 let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
                     "SELECT business, operation, direction, \
                      COALESCE(SUM(bytes), 0), COALESCE(SUM(count), 0) \
@@ -202,7 +217,7 @@ mod tests {
         let pool = create_pool(&db_path).await?;
         run_migrations(&pool).await?;
 
-        let layer = AggregateLayer::new(pool);
+        let layer = AggregateLayer::new(pool, None);
         // Just verify it constructs without error
         assert!(layer.db.is_closed() || !layer.db.is_closed());
 

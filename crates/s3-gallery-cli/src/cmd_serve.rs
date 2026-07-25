@@ -106,8 +106,8 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
     let core_s3 = S3Service::new(Arc::new(RealS3Client::from_config(&config)));
 
     // Traffic recorder with channel-based batch writer
-    let tx = spawn_batch_writer(pool.clone(), 60, 100);
-    let recorder = Arc::new(TrafficRecorder::new(tx));
+    let handle = spawn_batch_writer(pool.clone(), 5, 100);
+    let recorder = Arc::new(TrafficRecorder::new(handle.sender.clone()));
 
     // Apply layers: LogLayer wraps core_s3
     let s3_stack = LogLayer.layer(core_s3);

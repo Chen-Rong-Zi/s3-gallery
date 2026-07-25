@@ -1,9 +1,10 @@
 //! Background traffic batch writer — receives TrafficRecords via mpsc channel,
 //! batches them, and writes grouped records to traffic_log and traffic_file_log.
 //!
-//! Spawned by `spawn_batch_writer()`, which returns the mpsc::Sender side.
-//! The sender is passed to TrafficRecorder, and BusinessS3Client sends records
-//! through it on every successful S3 operation.
+//! Spawned by `spawn_batch_writer()`, which returns a `BatchWriterHandle`
+//! containing the mpsc::Sender and a flush signal. The sender is passed to
+//! TrafficRecorder, and BusinessS3Client sends records through it on every
+//! successful S3 operation.
 //!
 //! Every 5 seconds or every 100 records, the batch is flushed to the database:
 //! - traffic_log: grouped by (host_id, business, operation, direction) with aggregated bytes/count
@@ -15,6 +16,7 @@ use std::time::Duration;
 use chrono::Utc;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use super::traffic_recorder::TrafficRecord;
 
@@ -24,16 +26,40 @@ const CHANNEL_CAPACITY: usize = 4096;
 const TRAFFIC_LOG_RETENTION_DAYS: i64 = 90;
 const TRAFFIC_STATS_RETENTION_DAYS: i64 = 365;
 
+/// Handle to a running TrafficBatchWriter.
+///
+/// Provides the sender for recording traffic and a `flush()` method to
+/// request an immediate flush of buffered records.
+pub struct BatchWriterHandle {
+    /// Sender for traffic records.
+    pub sender: mpsc::Sender<TrafficRecord>,
+    /// Channel for flush requests (oneshot response).
+    flush_tx: mpsc::Sender<oneshot::Sender<()>>,
+}
+
+impl BatchWriterHandle {
+    /// Request an immediate flush and wait for completion.
+    ///
+    /// Returns immediately if the batch writer has shut down.
+    pub async fn flush(&self) {
+        let (tx, rx) = oneshot::channel();
+        if self.flush_tx.send(tx).await.is_ok() {
+            let _ = rx.await;
+        }
+    }
+}
+
 /// Spawn the batch writer background task.
 ///
-/// Returns the mpsc::Sender that TrafficRecorder uses to send records.
+/// Returns a `BatchWriterHandle` with the sender and flush signal.
 /// When `flush_interval_secs` or `batch_size` is 0, defaults are used.
 pub fn spawn_batch_writer(
     pool: SqlitePool,
     flush_interval_secs: u64,
     batch_size: usize,
-) -> mpsc::Sender<TrafficRecord> {
+) -> BatchWriterHandle {
     let (tx, rx) = mpsc::channel::<TrafficRecord>(CHANNEL_CAPACITY);
+    let (flush_tx, flush_rx) = mpsc::channel::<oneshot::Sender<()>>(32);
     let interval = if flush_interval_secs == 0 {
         DEFAULT_FLUSH_INTERVAL_SECS
     } else {
@@ -48,6 +74,7 @@ pub fn spawn_batch_writer(
     tokio::spawn(async move {
         let mut writer = TrafficBatchWriter {
             receiver: rx,
+            flush_receiver: flush_rx,
             pool,
             buffer: Vec::with_capacity(batch_size),
             batch_size,
@@ -57,12 +84,13 @@ pub fn spawn_batch_writer(
         writer.run().await;
     });
 
-    tx
+    BatchWriterHandle { sender: tx, flush_tx }
 }
 
 /// Internal batch writer that receives and persists traffic records.
 struct TrafficBatchWriter {
     receiver: mpsc::Receiver<TrafficRecord>,
+    flush_receiver: mpsc::Receiver<oneshot::Sender<()>>,
     pool: SqlitePool,
     buffer: Vec<TrafficRecord>,
     batch_size: usize,
@@ -71,7 +99,7 @@ struct TrafficBatchWriter {
 }
 
 impl TrafficBatchWriter {
-    /// Main loop: receive records and flush on timer or batch size.
+    /// Main loop: receive records and flush on timer, batch size, or request.
     async fn run(&mut self) {
         let mut interval = tokio::time::interval(self.flush_interval);
         // Skip the immediate first tick so the first flush is timer-driven
@@ -86,6 +114,10 @@ impl TrafficBatchWriter {
                     if self.buffer.len() >= self.batch_size {
                         self.flush().await;
                     }
+                }
+                Some(responder) = self.flush_receiver.recv() => {
+                    self.flush().await;
+                    let _ = responder.send(());
                 }
                 _ = interval.tick() => {
                     if !self.buffer.is_empty() {
@@ -328,7 +360,7 @@ mod tests {
         let pool = create_pool(&db_path).await?;
         run_migrations(&pool).await?;
 
-        let tx = spawn_batch_writer(pool.clone(), 1, 100); // flush every 1s
+        let handle = spawn_batch_writer(pool.clone(), 1, 100); // flush every 1s
 
         let record = TrafficRecord {
             host_id: "test".into(),
@@ -339,10 +371,8 @@ mod tests {
             bytes: 500,
             count: 1,
         };
-        tx.send(record).await.unwrap();
-
-        // Wait for flush
-        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+        handle.sender.send(record).await.unwrap();
+        handle.flush().await; // Wait for flush
 
         // Verify record was written
         let count: i64 = sqlx::query_scalar(

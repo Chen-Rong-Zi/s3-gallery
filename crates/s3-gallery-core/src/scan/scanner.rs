@@ -55,8 +55,8 @@ pub async fn run_scan(config: ScanConfig, endpoint: String) -> Result<ScanResult
         "Scan started"
     );
 
-    let tx = spawn_batch_writer(config.db.clone(), 60, 100);
-    let recorder = Arc::new(TrafficRecorder::new(tx));
+    let handle = spawn_batch_writer(config.db.clone(), 5, 100);
+    let recorder = Arc::new(TrafficRecorder::new(handle.sender.clone()));
 
     let discover_s3 = ServiceBuilder::new()
         .layer(LogLayer)
@@ -77,7 +77,7 @@ pub async fn run_scan(config: ScanConfig, endpoint: String) -> Result<ScanResult
         .service(S3Service::new(config.s3.into_inner()));
 
     let mut pipeline = ServiceBuilder::new()
-        .layer(AggregateLayer::new(config.db.clone()))
+        .layer(AggregateLayer::new(config.db.clone(), Some(handle)))
         .layer(ProcessLayer::new(config.db.clone(), exif_s3, config.concurrency))
         .layer(DiffLayer::new(config.db.clone()))
         .layer(DiscoverLayer::new(config.db.clone()))

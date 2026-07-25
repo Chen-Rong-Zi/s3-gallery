@@ -139,8 +139,8 @@ async fn run_scan_core(
     let db_path = &cli.db_path;
 
     // Set up traffic tracking with channel-based batch writer
-    let tx = spawn_batch_writer(pool.clone(), 60, 100);
-    let recorder = Arc::new(TrafficRecorder::new(tx));
+    let handle = spawn_batch_writer(pool.clone(), 5, 100);
+    let recorder = Arc::new(TrafficRecorder::new(handle.sender.clone()));
 
     // Build discover_s3 with LogLayer + TrafficLayer for "scan_discover"
     let discover_core = S3Service::new(s3.clone());
@@ -164,7 +164,7 @@ async fn run_scan_core(
         .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
     let mut pipeline = ServiceBuilder::new()
-        .layer(AggregateLayer::new(pool.clone()))
+        .layer(AggregateLayer::new(pool.clone(), Some(handle)))
         .layer(ProcessLayer::new(pool.clone(), exif_s3, opts.concurrency))
         .layer(DiffLayer::new(pool.clone()))
         .layer(DiscoverLayer::new(pool.clone()))
