@@ -4,14 +4,14 @@
 use std::collections::HashMap;
 
 use crate::s3::config::HostIdentifier;
-use crate::types::ObjectKey;
+use crate::types::Prefix;
 
 /// Request — same for all pipeline layers.
 #[derive(Debug, Clone)]
 pub struct ScanRequest {
     pub endpoint: String,
     pub bucket: crate::types::BucketName,
-    pub scope_prefix: ObjectKey,
+    pub scope_prefix: Prefix,
     pub concurrency: usize,
     pub extract_metadata: bool,
     pub generate_thumbnails: bool,
@@ -40,7 +40,7 @@ pub struct ScanResponse {
 pub struct HostInfo {
     pub host_id: String,
     pub host_name: String,
-    pub prefix: ObjectKey,
+    pub prefix: Prefix,
     pub config: Option<HostIdentifier>,
 }
 

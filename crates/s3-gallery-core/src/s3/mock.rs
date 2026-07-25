@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::error::{Result, S3GalleryError};
-use crate::types::{BucketName, Etag, FileSize, ObjectKey};
+use crate::types::{BucketName, Etag, FileSize, ObjectKey, Prefix};
 
 use super::client::{ObjectMetadata, ObjectSummary, S3Client};
 
@@ -111,7 +111,7 @@ impl S3Client for MockS3Client {
     async fn list_objects(
         &self,
         _bucket: &BucketName,
-        prefix: &ObjectKey,
+        prefix: &Prefix,
     ) -> Result<Vec<ObjectSummary>> {
         let storage = self.storage.lock().await;
         let prefix_str = prefix.as_str();
@@ -279,7 +279,7 @@ mod tests {
             .add_object("docs/readme.txt", b"text data".to_vec())
             .await?;
 
-        let prefix = ObjectKey::new("photos/2024/")?;
+        let prefix = Prefix::new("photos/2024/")?;
         let results = client.list_objects(&bucket, &prefix).await?;
 
         assert_eq!(results.len(), 2);

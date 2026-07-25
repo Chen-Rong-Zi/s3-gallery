@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::Utc;
-use sqlx::SqlitePool;
+use sea_orm::{DatabaseConnection, Statement};
 use tokio::sync::Mutex;
 use tower::service_fn;
 use tower::util::BoxService;
@@ -24,7 +24,7 @@ use crate::scan::scan_objects::ScanObjectEntry;
 
 /// AggregateLayer wraps an inner service with report generation.
 pub struct AggregateLayer {
-    db: SqlitePool,
+    db: DatabaseConnection,
     batch_writer: Arc<tokio::sync::Mutex<Option<BatchWriterHandle>>>,
 }
 
@@ -33,7 +33,7 @@ impl AggregateLayer {
     ///
     /// Pass the `BatchWriterHandle` from `spawn_batch_writer()` to enable
     /// flushing buffered traffic records before generating the report.
-    pub fn new(db: SqlitePool, batch_writer: Option<BatchWriterHandle>) -> Self {
+    pub fn new(db: DatabaseConnection, batch_writer: Option<BatchWriterHandle>) -> Self {
         Self {
             db,
             batch_writer: Arc::new(tokio::sync::Mutex::new(batch_writer)),
@@ -77,19 +77,45 @@ where
                 let scan_end_str = scan_end.to_rfc3339();
 
                 // 3. Query traffic from DB for this scan period
-                let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
-                    "SELECT business, operation, direction, \
-                     COALESCE(SUM(bytes), 0), COALESCE(SUM(count), 0) \
-                     FROM traffic_log \
-                     WHERE recorded_at >= ? AND recorded_at <= ? \
-                       AND business LIKE 'scan_%' \
-                     GROUP BY business, operation, direction",
-                )
-                .bind(&scan_start_str)
-                .bind(&scan_end_str)
-                .fetch_all(&db)
-                .await
-                .map_err(|e| S3GalleryError::DbError(format!("Failed to query traffic: {e}")))?;
+                let rows: Vec<(String, String, String, i64, i64)> = {
+                    use sea_orm::ConnectionTrait;
+                    let stmt = Statement::from_sql_and_values(
+                        sea_orm::DatabaseBackend::Sqlite,
+                        "SELECT business, operation, direction, \
+                         COALESCE(SUM(bytes), 0), COALESCE(SUM(count), 0) \
+                         FROM traffic_log \
+                         WHERE recorded_at >= ? AND recorded_at <= ? \
+                           AND business LIKE 'scan_%' \
+                         GROUP BY business, operation, direction",
+                        vec![
+                            sea_orm::Value::String(Some(Box::new(scan_start_str.clone()))),
+                            sea_orm::Value::String(Some(Box::new(scan_end_str.clone()))),
+                        ],
+                    );
+                    db.query_all(stmt)
+                        .await
+                        .map_err(|e| S3GalleryError::DbError(format!("Failed to query traffic: {e}")))?
+                        .into_iter()
+                        .map(|row| {
+                            let business: String = row.try_get_by("business")
+                                .or_else(|_| row.try_get_by(0))
+                                .unwrap_or_default();
+                            let operation: String = row.try_get_by("operation")
+                                .or_else(|_| row.try_get_by(1))
+                                .unwrap_or_default();
+                            let direction: String = row.try_get_by("direction")
+                                .or_else(|_| row.try_get_by(2))
+                                .unwrap_or_default();
+                            let bytes: i64 = row.try_get_by("COALESCE(SUM(bytes), 0)")
+                                .or_else(|_| row.try_get_by(3))
+                                .unwrap_or(0);
+                            let count: i64 = row.try_get_by("COALESCE(SUM(count), 0)")
+                                .or_else(|_| row.try_get_by(4))
+                                .unwrap_or(0);
+                            (business, operation, direction, bytes, count)
+                        })
+                        .collect::<Vec<_>>()
+                };
 
                 let mut traffic_by_stage: HashMap<String, HashMap<String, TrafficByOperation>> =
                     HashMap::new();
@@ -163,16 +189,25 @@ where
                 }
 
                 // Total size from files table
-                let total_size_val: Option<i64> = sqlx::query_scalar(
-                    "SELECT SUM(size) FROM files \
-                     WHERE host_id IN (SELECT host_id FROM scan_objects WHERE scan_id = ?) \
-                     AND is_deleted = 0",
-                )
-                .bind(&resp.scan_id)
-                .fetch_optional(&db)
-                .await
-                .map_err(|e| S3GalleryError::DbError(format!("Failed to sum sizes: {e}")))?;
-                let total_size = total_size_val.unwrap_or(0) as u64;
+                let total_size: u64 = {
+                    use sea_orm::ConnectionTrait;
+                    let stmt = Statement::from_sql_and_values(
+                        sea_orm::DatabaseBackend::Sqlite,
+                        "SELECT COALESCE(SUM(size), 0) FROM files \
+                         WHERE host_id IN (SELECT host_id FROM scan_objects WHERE scan_id = ?) \
+                         AND is_deleted = 0",
+                        vec![sea_orm::Value::String(Some(Box::new(resp.scan_id.clone())))],
+                    );
+                    db.query_one(stmt)
+                        .await
+                        .map_err(|e| S3GalleryError::DbError(format!("Failed to sum sizes: {e}")))?
+                        .and_then(|row| {
+                            row.try_get_by::<i64, usize>(0)
+                                .or_else(|_| row.try_get_by::<i64, &str>("COALESCE(SUM(size), 0)"))
+                                .ok()
+                        })
+                        .unwrap_or(0) as u64
+                };
 
                 // 6. Calculate estimated cost ($0.09/GB download)
                 let estimated_cost = total_download as f64 * 0.00000009;
@@ -206,7 +241,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::pool::create_pool;
     use crate::db::schema::run_migrations;
     use tempfile::tempdir;
 
@@ -214,13 +248,18 @@ mod tests {
     async fn test_aggregate_layer_creation() -> crate::error::Result<()> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let db = create_pool(&db_path).await?;
-        let pool = db.get_sqlite_connection_pool().clone();
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::SqlitePool::connect(&db_url)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         run_migrations(&pool).await?;
+        let db = sea_orm::Database::connect(&db_url)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        let layer = AggregateLayer::new(pool, None);
+        let layer = AggregateLayer::new(db, None);
         // Just verify it constructs without error
-        assert!(layer.db.is_closed() || !layer.db.is_closed());
+        assert!(true);
 
         Ok(())
     }

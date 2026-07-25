@@ -8,7 +8,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use crate::error::{Result, S3GalleryError};
 use crate::s3::client::{ObjectMetadata, ObjectSummary, S3Client};
 use crate::s3::config::OssConfig;
-use crate::types::{BucketName, Etag, FileSize, ObjectKey};
+use crate::types::{BucketName, Etag, FileSize, ObjectKey, Prefix};
 
 /// A real S3 client that wraps `aws_sdk_s3::Client` and implements the
 /// `S3Client` trait.
@@ -51,7 +51,7 @@ impl S3Client for RealS3Client {
     async fn list_objects(
         &self,
         bucket: &BucketName,
-        prefix: &ObjectKey,
+        prefix: &Prefix,
     ) -> Result<Vec<ObjectSummary>> {
         let resp = self
             .client

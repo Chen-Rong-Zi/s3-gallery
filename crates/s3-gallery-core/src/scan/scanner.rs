@@ -1,3 +1,4 @@
+use sea_orm::DatabaseConnection;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use tower::Service;
@@ -13,14 +14,15 @@ use crate::scan::diff_layer::DiffLayer;
 use crate::scan::discover::DiscoverLayer;
 use crate::scan::pipeline::ScanRequest;
 use crate::scan::process::ProcessLayer;
-use crate::types::{BucketName, ObjectKey};
+use crate::types::{BucketName, Prefix};
 
 /// Configuration for a scan operation.
 pub struct ScanConfig {
     pub s3: S3Service,
     pub db: SqlitePool,
+    pub sea_db: DatabaseConnection,
     pub bucket: BucketName,
-    pub prefix: ObjectKey,
+    pub prefix: Prefix,
     pub concurrency: usize,
     pub extract_metadata: bool,
     pub generate_thumbnails: bool,
@@ -77,10 +79,10 @@ pub async fn run_scan(config: ScanConfig, endpoint: String) -> Result<ScanResult
         .service(S3Service::new(config.s3.into_inner()));
 
     let mut pipeline = ServiceBuilder::new()
-        .layer(AggregateLayer::new(config.db.clone(), Some(handle)))
+        .layer(AggregateLayer::new(config.sea_db.clone(), Some(handle)))
         .layer(ProcessLayer::new(config.db.clone(), exif_s3, config.concurrency))
-        .layer(DiffLayer::new(config.db.clone()))
-        .layer(DiscoverLayer::new(config.db.clone()))
+        .layer(DiffLayer::new(config.db.clone(), config.sea_db.clone()))
+        .layer(DiscoverLayer::new(config.db.clone(), config.sea_db.clone()))
         .service(discover_s3);
 
     let resp = pipeline
@@ -132,17 +134,23 @@ mod tests {
     async fn test_scan_empty_bucket() -> Result<()> {
         let dir = tempdir().map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let db = create_pool(&db_path).await?;
-        let pool = db.get_sqlite_connection_pool().clone();
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::SqlitePool::connect(&db_url)
+            .await
+            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+        let sea_db = sea_orm::Database::connect(&db_url)
+            .await
+            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         run_migrations(&pool).await?;
 
         let s3 = Arc::new(MockS3Client::new()) as Arc<dyn S3Client>;
 
         let config = ScanConfig {
             s3: S3Service::new(s3.clone()),
-            db: pool.clone(),
+            db: pool,
+            sea_db,
             bucket: BucketName::new("test-bucket")?,
-            prefix: ObjectKey::new("test")?,
+            prefix: Prefix::new("test/")?,
             concurrency: 10,
             extract_metadata: false,
             generate_thumbnails: false,

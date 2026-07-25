@@ -13,14 +13,14 @@ use tower::Service;
 
 use crate::error::{Result, S3GalleryError};
 use crate::s3::client::{ObjectMetadata, ObjectSummary, S3Client};
-use crate::types::{BucketName, ObjectKey};
+use crate::types::{BucketName, ObjectKey, Prefix};
 
 /// Unified S3 request type — each variant corresponds to one S3Client method.
 #[derive(Debug, Clone)]
 pub enum S3Request {
     GetObject(BucketName, ObjectKey),
     GetObjectRange(BucketName, ObjectKey, u64, u64),
-    ListObjects(BucketName, ObjectKey),
+    ListObjects(BucketName, Prefix),
     HeadObject(BucketName, ObjectKey),
     PutObject(BucketName, ObjectKey, Vec<u8>),
     PutObjectIfNoneMatch(BucketName, ObjectKey, Vec<u8>),
@@ -193,7 +193,7 @@ impl S3Service {
     pub async fn list_objects(
         &mut self,
         bucket: &BucketName,
-        prefix: &ObjectKey,
+        prefix: &Prefix,
     ) -> Result<Vec<ObjectSummary>> {
         self.call(S3Request::ListObjects(bucket.clone(), prefix.clone()))
             .await?
@@ -335,7 +335,7 @@ mod tests {
         let mut svc = S3Service::new(mock);
         let req = S3Request::ListObjects(
             crate::types::BucketName::new("test-bucket")?,
-            crate::types::ObjectKey::new("")?,
+            crate::types::Prefix::new("")?,
         );
         let resp = svc.call(req).await?;
         match resp {

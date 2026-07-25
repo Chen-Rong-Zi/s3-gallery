@@ -275,7 +275,6 @@ async fn cleanup_old_data(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use crate::db::pool::create_pool;
     use crate::db::schema::run_migrations;
     use crate::s3::traffic_recorder::TrafficRecord;
     use crate::types::S3Operation;
@@ -285,8 +284,10 @@ mod tests {
     async fn test_flush_batch_writes_to_db() -> crate::error::Result<()> {
         let dir = tempdir().map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let db = create_pool(&db_path).await?;
-        let pool = db.get_sqlite_connection_pool().clone();
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::SqlitePool::connect(&db_url)
+            .await
+            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         run_migrations(&pool).await?;
 
         let records = vec![
@@ -359,8 +360,10 @@ mod tests {
     async fn test_spawn_batch_writer_sends_records() -> crate::error::Result<()> {
         let dir = tempdir().map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let db = create_pool(&db_path).await?;
-        let pool = db.get_sqlite_connection_pool().clone();
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
+        let pool = sqlx::SqlitePool::connect(&db_url)
+            .await
+            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         run_migrations(&pool).await?;
 
         let handle = spawn_batch_writer(pool.clone(), 1, 100); // flush every 1s

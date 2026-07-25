@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::types::{BucketName, Etag, FileSize, ObjectKey};
+use crate::types::{BucketName, Etag, FileSize, ObjectKey, Prefix};
 
 /// Summary of an S3 object returned by list operations.
 #[derive(Debug, Clone)]
@@ -35,7 +35,7 @@ pub trait S3Client: Send + Sync + 'static {
     async fn list_objects(
         &self,
         bucket: &BucketName,
-        prefix: &ObjectKey,
+        prefix: &Prefix,
     ) -> Result<Vec<ObjectSummary>>;
 
     /// Get metadata for a single object (HEAD).

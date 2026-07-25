@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::error::Result;
 use crate::s3::client::{ObjectMetadata, ObjectSummary, S3Client};
-use crate::types::{BucketName, ObjectKey, S3Operation};
+use crate::types::{BucketName, ObjectKey, Prefix, S3Operation};
 
 /// A single traffic record — created by BusinessS3Client on successful S3 operations.
 #[derive(Debug, Clone)]
@@ -103,7 +103,7 @@ impl S3Client for BusinessS3Client {
     async fn list_objects(
         &self,
         bucket: &BucketName,
-        prefix: &ObjectKey,
+        prefix: &Prefix,
     ) -> Result<Vec<ObjectSummary>> {
         let result = self.inner.list_objects(bucket, prefix).await;
         if result.is_ok() {

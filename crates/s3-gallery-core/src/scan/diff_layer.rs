@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use sea_orm::DatabaseConnection;
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 use tower::service_fn;
@@ -22,11 +23,12 @@ use crate::types::FileType;
 /// DiffLayer wraps an inner service with DB diff logic.
 pub struct DiffLayer {
     db: SqlitePool,
+    sea_db: DatabaseConnection,
 }
 
 impl DiffLayer {
-    pub fn new(db: SqlitePool) -> Self {
-        Self { db }
+    pub fn new(db: SqlitePool, sea_db: DatabaseConnection) -> Self {
+        Self { db, sea_db }
     }
 }
 
@@ -41,9 +43,11 @@ where
 
     fn layer(&self, inner: I) -> Self::Service {
         let db = self.db.clone();
+        let sea_db = self.sea_db.clone();
         let inner = Arc::new(Mutex::new(inner));
         BoxService::new(service_fn(move |req: ScanRequest| {
             let db = db.clone();
+            let sea_db = sea_db.clone();
             let inner = inner.clone();
             async move {
                 // 1. Call inner (DiscoverLayer)
@@ -56,7 +60,7 @@ where
                 let mut diff_results = Vec::new();
                 for host in &resp.hosts {
                     let scan_entries = ScanObjectEntry::list_by_scan(
-                        &db, &resp.scan_id, &host.host_id,
+                        &sea_db, &resp.scan_id, &host.host_id,
                     )
                     .await?;
 
