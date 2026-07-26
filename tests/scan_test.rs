@@ -5,13 +5,17 @@
 
 use std::sync::Arc;
 
-use s3_gallery_core::db::models::FileEntry;
-use s3_gallery_core::error::Result;
+use s3_gallery_core::entity::file;
+use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::mock::MockS3Client;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::scan::scanner::{run_scan, ScanConfig};
-use s3_gallery_core::types::{BucketName, Prefix};
+use s3_gallery_core::types::{
+    BucketName, Etag, FileSize, FileType, HostId, MetadataState, ObjectKey, Prefix,
+};
+use sea_orm::ActiveValue::Set;
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use sea_orm::DatabaseConnection;
 
 mod common;
@@ -72,7 +76,7 @@ async fn test_scan_empty_bucket() -> Result<()> {
     let s3 = Arc::new(MockS3Client::new()) as Arc<dyn S3Client>;
     let bucket = common::test_bucket()?;
 
-    let config = make_scan_config(s3, db, bucket, "test");
+    let config = make_scan_config(s3, db, bucket, "");
     let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 0);
@@ -91,26 +95,44 @@ async fn test_scan_discovers_new_objects() -> Result<()> {
         ("test/docs/readme.txt", b"text data"),
     ])?;
     let bucket = common::test_bucket()?;
-    let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
-    let config = make_scan_config(Arc::new(s3), db, bucket, "");
+    let config = make_scan_config(Arc::new(s3), db.clone(), bucket, "");
     let result = run_scan(config, "".to_owned()).await?;
 
     assert_eq!(result.total_files, 3, "should discover 3 objects");
     assert_eq!(result.new_files, 3, "all 3 should be new");
 
     // Verify DB entries were created.
-    let count = FileEntry::count(&sqlite_pool, "test-host").await?;
+    let count = file::Entity::find()
+        .filter(file::Column::HostId.eq(HostId::new("test-host")?))
+        .count(&db)
+        .await?;
     assert_eq!(count, 3);
 
     // Verify specific entries.
-    let entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/photos/img001.jpg").await?;
-    assert_eq!(entry.file_type, "jpeg");
+    let entry = file::Entity::find()
+        .filter(
+            sea_orm::Condition::all()
+                .add(file::Column::HostId.eq(HostId::new("test-host")?))
+                .add(file::Column::Key.eq(ObjectKey::new("test/photos/img001.jpg")?)),
+        )
+        .one(&db)
+        .await?
+        .ok_or_else(|| S3GalleryError::NotFound("file".into()))?;
+    assert_eq!(entry.file_type, FileType::Jpeg);
     assert!(!entry.is_deleted);
 
-    let entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/docs/readme.txt").await?;
+    let entry = file::Entity::find()
+        .filter(
+            sea_orm::Condition::all()
+                .add(file::Column::HostId.eq(HostId::new("test-host")?))
+                .add(file::Column::Key.eq(ObjectKey::new("test/docs/readme.txt")?)),
+        )
+        .one(&db)
+        .await?
+        .ok_or_else(|| S3GalleryError::NotFound("file".into()))?;
     // "txt" is not a recognized file type, so it's classified as "unknown".
-    assert_eq!(entry.file_type, "unknown");
+    assert_eq!(entry.file_type, FileType::Unknown);
     Ok(())
 }
 
@@ -118,27 +140,26 @@ async fn test_scan_discovers_new_objects() -> Result<()> {
 async fn test_scan_detects_modified_objects() -> Result<()> {
     let (db, _dir) = common::setup_test_db().await?;
     let bucket = common::test_bucket()?;
-    let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
     // Insert a file entry with an old etag.
-    let file = FileEntry {
-        host_id: "test-host".to_string(),
-        key: "test/photos/img001.jpg".to_string(),
-        etag: "old-etag".to_string(),
-        size: 100,
-        last_modified: "2026-01-01T00:00:00Z".to_string(),
-        content_type: Some("image/jpeg".to_string()),
-        file_type: "jpeg".to_string(),
-        metadata_state: "pending".to_string(),
-        effective_date: "".to_string(),
-        is_deleted: false,
+    let am = file::ActiveModel {
+        host_id: Set(HostId::new("test-host")?),
+        key: Set(ObjectKey::new("test/photos/img001.jpg")?),
+        etag: Set(Etag::new("old-etag")?),
+        size: Set(FileSize::new(100)),
+        last_modified: Set("2026-01-01T00:00:00Z".to_string()),
+        content_type: Set(Some("image/jpeg".to_string())),
+        file_type: Set(FileType::Jpeg),
+        metadata_state: Set(MetadataState::Pending),
+        is_deleted: Set(false),
+        effective_date: Set("".to_string()),
     };
-    FileEntry::insert(&sqlite_pool, &file).await?;
+    file::Entity::insert(am).exec(&db).await?;
 
     // The mock S3 generates a random etag on insert, so the object will have
     // a different etag than what's in the DB, triggering a "changed" detection.
     let s3 = mock_s3_with_fixtures(vec![("test/photos/img001.jpg", b"updated jpeg data")])?;
-    let config = make_scan_config(Arc::new(s3), db, bucket, "");
+    let config = make_scan_config(Arc::new(s3), db.clone(), bucket, "");
     let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 1);
@@ -150,11 +171,23 @@ async fn test_scan_detects_modified_objects() -> Result<()> {
     assert_eq!(result.deleted_files, 0);
 
     // Verify the etag was updated in the DB.
-    let updated =
-        FileEntry::get_by_key(&sqlite_pool, "test-host", "test/photos/img001.jpg").await?;
-    assert_ne!(updated.etag, "old-etag", "etag should have been updated");
+    let updated = file::Entity::find()
+        .filter(
+            sea_orm::Condition::all()
+                .add(file::Column::HostId.eq(HostId::new("test-host")?))
+                .add(file::Column::Key.eq(ObjectKey::new("test/photos/img001.jpg")?)),
+        )
+        .one(&db)
+        .await?
+        .ok_or_else(|| S3GalleryError::NotFound("file".into()))?;
+    assert_ne!(
+        updated.etag,
+        Etag::new("old-etag")?,
+        "etag should have been updated"
+    );
     assert_eq!(
-        updated.size, 17,
+        updated.size,
+        FileSize::new(17),
         "size should match 'updated jpeg data' len"
     );
     Ok(())
@@ -164,25 +197,24 @@ async fn test_scan_detects_modified_objects() -> Result<()> {
 async fn test_scan_detects_deleted_objects() -> Result<()> {
     let (db, _dir) = common::setup_test_db().await?;
     let bucket = common::test_bucket()?;
-    let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
     // Insert a file that exists in the DB but not in S3.
-    let file = FileEntry {
-        host_id: "test-host".to_string(),
-        key: "test/photos/ghost.txt".to_string(),
-        etag: "ghost-etag".to_string(),
-        size: 50,
-        last_modified: "2026-01-01T00:00:00Z".to_string(),
-        content_type: None,
-        file_type: "txt".to_string(),
-        metadata_state: "pending".to_string(),
-        effective_date: "".to_string(),
-        is_deleted: false,
+    let am = file::ActiveModel {
+        host_id: Set(HostId::new("test-host")?),
+        key: Set(ObjectKey::new("test/photos/ghost.txt")?),
+        etag: Set(Etag::new("ghost-etag")?),
+        size: Set(FileSize::new(50)),
+        last_modified: Set("2026-01-01T00:00:00Z".to_string()),
+        content_type: Set(None),
+        file_type: Set(FileType::Unknown),
+        metadata_state: Set(MetadataState::Pending),
+        is_deleted: Set(false),
+        effective_date: Set("".to_string()),
     };
-    FileEntry::insert(&sqlite_pool, &file).await?;
+    file::Entity::insert(am).exec(&db).await?;
 
     let s3 = mock_s3_with_fixtures(vec![])?; // empty — no objects
-    let config = make_scan_config(Arc::new(s3), db, bucket, "");
+    let config = make_scan_config(Arc::new(s3), db.clone(), bucket, "");
     let result = run_scan(config, String::new()).await?;
 
     assert_eq!(result.total_files, 0);
@@ -194,7 +226,15 @@ async fn test_scan_detects_deleted_objects() -> Result<()> {
     );
 
     // Verify the file is soft-deleted.
-    let entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/photos/ghost.txt").await?;
+    let entry = file::Entity::find()
+        .filter(
+            sea_orm::Condition::all()
+                .add(file::Column::HostId.eq(HostId::new("test-host")?))
+                .add(file::Column::Key.eq(ObjectKey::new("test/photos/ghost.txt")?)),
+        )
+        .one(&db)
+        .await?
+        .ok_or_else(|| S3GalleryError::NotFound("file".into()))?;
     assert!(entry.is_deleted);
     Ok(())
 }
@@ -203,50 +243,51 @@ async fn test_scan_detects_deleted_objects() -> Result<()> {
 async fn test_scan_mixed_new_changed_deleted() -> Result<()> {
     let (db, _dir) = common::setup_test_db().await?;
     let bucket = common::test_bucket()?;
-    let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
     // Pre-populate DB with one unchanged, one that will be "changed" (different
     // etag), and one that will be "deleted" (not in S3).
     let db_files = vec![
-        FileEntry {
-            host_id: "test-host".to_string(),
-            key: "test/unchanged.txt".to_string(),
-            etag: "u-etag".to_string(),
-            size: 10,
-            last_modified: "2026-01-01T00:00:00Z".to_string(),
-            content_type: None,
-            file_type: "txt".to_string(),
-            metadata_state: "pending".to_string(),
-            effective_date: "".to_string(),
-            is_deleted: false,
+        file::ActiveModel {
+            host_id: Set(HostId::new("test-host")?),
+            key: Set(ObjectKey::new("test/unchanged.txt")?),
+            etag: Set(Etag::new("u-etag")?),
+            size: Set(FileSize::new(10)),
+            last_modified: Set("2026-01-01T00:00:00Z".to_string()),
+            content_type: Set(None),
+            file_type: Set(FileType::Unknown),
+            metadata_state: Set(MetadataState::Pending),
+            is_deleted: Set(false),
+            effective_date: Set("".to_string()),
         },
-        FileEntry {
-            host_id: "test-host".to_string(),
-            key: "test/changed.txt".to_string(),
-            etag: "old-etag".to_string(),
-            size: 20,
-            last_modified: "2026-01-01T00:00:00Z".to_string(),
-            content_type: None,
-            file_type: "txt".to_string(),
-            metadata_state: "pending".to_string(),
-            effective_date: "".to_string(),
-            is_deleted: false,
+        file::ActiveModel {
+            host_id: Set(HostId::new("test-host")?),
+            key: Set(ObjectKey::new("test/changed.txt")?),
+            etag: Set(Etag::new("old-etag")?),
+            size: Set(FileSize::new(20)),
+            last_modified: Set("2026-01-01T00:00:00Z".to_string()),
+            content_type: Set(None),
+            file_type: Set(FileType::Unknown),
+            metadata_state: Set(MetadataState::Pending),
+            is_deleted: Set(false),
+            effective_date: Set("".to_string()),
         },
-        FileEntry {
-            host_id: "test-host".to_string(),
-            key: "test/deleted.txt".to_string(),
-            etag: "d-etag".to_string(),
-            size: 30,
-            last_modified: "2026-01-01T00:00:00Z".to_string(),
-            content_type: None,
-            file_type: "txt".to_string(),
-            metadata_state: "pending".to_string(),
-            effective_date: "".to_string(),
-            is_deleted: false,
+        file::ActiveModel {
+            host_id: Set(HostId::new("test-host")?),
+            key: Set(ObjectKey::new("test/deleted.txt")?),
+            etag: Set(Etag::new("d-etag")?),
+            size: Set(FileSize::new(30)),
+            last_modified: Set("2026-01-01T00:00:00Z".to_string()),
+            content_type: Set(None),
+            file_type: Set(FileType::Unknown),
+            metadata_state: Set(MetadataState::Pending),
+            is_deleted: Set(false),
+            effective_date: Set("".to_string()),
         },
     ];
     for f in &db_files {
-        FileEntry::insert(&sqlite_pool, f).await?;
+        // Need to clone the ActiveModel to avoid move issues in the loop.
+        // We create a fresh ActiveModel for each insert.
+        file::Entity::insert(f.clone()).exec(&db).await?;
     }
 
     // S3 has: unchanged.txt, changed.txt, and new.txt (not in DB).
@@ -257,7 +298,7 @@ async fn test_scan_mixed_new_changed_deleted() -> Result<()> {
         ("test/changed.txt", b"data"),
         ("test/new.txt", b"new data"),
     ])?;
-    let config = make_scan_config(Arc::new(s3), db, bucket, "");
+    let config = make_scan_config(Arc::new(s3), db.clone(), bucket, "");
     let result = run_scan(config, String::new()).await?;
 
     // At minimum we should see:
@@ -266,12 +307,27 @@ async fn test_scan_mixed_new_changed_deleted() -> Result<()> {
     assert_eq!(result.deleted_files, 1, "deleted.txt was removed");
 
     // Verify new.txt was inserted.
-    let new_entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/new.txt").await?;
+    let new_entry = file::Entity::find()
+        .filter(
+            sea_orm::Condition::all()
+                .add(file::Column::HostId.eq(HostId::new("test-host")?))
+                .add(file::Column::Key.eq(ObjectKey::new("test/new.txt")?)),
+        )
+        .one(&db)
+        .await?
+        .ok_or_else(|| S3GalleryError::NotFound("file".into()))?;
     assert!(!new_entry.is_deleted);
 
     // Verify deleted.txt was soft-deleted.
-    let deleted_entry =
-        FileEntry::get_by_key(&sqlite_pool, "test-host", "test/deleted.txt").await?;
+    let deleted_entry = file::Entity::find()
+        .filter(
+            sea_orm::Condition::all()
+                .add(file::Column::HostId.eq(HostId::new("test-host")?))
+                .add(file::Column::Key.eq(ObjectKey::new("test/deleted.txt")?)),
+        )
+        .one(&db)
+        .await?
+        .ok_or_else(|| S3GalleryError::NotFound("file".into()))?;
     assert!(deleted_entry.is_deleted);
 
     Ok(())
@@ -295,9 +351,8 @@ async fn test_scan_updates_scan_metadata() -> Result<()> {
 async fn test_scan_skips_s3_gallery_directory() -> Result<()> {
     let (db, _dir) = common::setup_test_db().await?;
     let s3 = mock_s3_with_fixtures(vec![("test/photos/img.jpg", b"data")])?;
-    let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
-    let config = make_scan_config(Arc::new(s3), db, common::test_bucket()?, "");
+    let config = make_scan_config(Arc::new(s3), db.clone(), common::test_bucket()?, "");
     let result = run_scan(config, String::new()).await?;
 
     // Only the non-.s3-gallery file should be counted.
@@ -308,7 +363,15 @@ async fn test_scan_skips_s3_gallery_directory() -> Result<()> {
     assert_eq!(result.new_files, 1);
 
     // Verify the photo file was recorded.
-    let entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/photos/img.jpg").await?;
+    let entry = file::Entity::find()
+        .filter(
+            sea_orm::Condition::all()
+                .add(file::Column::HostId.eq(HostId::new("test-host")?))
+                .add(file::Column::Key.eq(ObjectKey::new("test/photos/img.jpg")?)),
+        )
+        .one(&db)
+        .await?
+        .ok_or_else(|| S3GalleryError::NotFound("file".into()))?;
     assert!(!entry.is_deleted);
     Ok(())
 }
