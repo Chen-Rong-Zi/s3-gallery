@@ -1,8 +1,8 @@
+use crate::web::handlers::{render_template, HandlerResult};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::entity::file;
 use s3_gallery_core::entity::metadata;
 use s3_gallery_core::entity::thumbnail;
@@ -45,10 +45,7 @@ fn file_name_from_key(key: &str) -> String {
 ///
 /// Displays file information, metadata grouped by namespace, and a thumbnail
 /// preview for the specified file.
-pub async fn file_detail(
-    State(state): State<AppState>,
-    Path(key): Path<String>,
-) -> HandlerResult {
+pub async fn file_detail(State(state): State<AppState>, Path(key): Path<String>) -> HandlerResult {
     tracing::info!(handler = "file_detail", key = %key, "serving file detail");
 
     // Parse host_id from key (first segment before '/')

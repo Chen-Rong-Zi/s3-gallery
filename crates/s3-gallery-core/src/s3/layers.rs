@@ -51,14 +51,12 @@ impl Layer<S3Service> for TrafficLayer {
     type Service = S3Service;
 
     fn layer(&self, inner: S3Service) -> Self::Service {
-        S3Service::new(
-            Arc::new(BusinessS3Client::new(
-                inner.into_inner(),
-                &self.host_id,
-                &self.business,
-                self.recorder.clone(),
-            )) as Arc<dyn S3Client>,
-        )
+        S3Service::new(Arc::new(BusinessS3Client::new(
+            inner.into_inner(),
+            &self.host_id,
+            &self.business,
+            self.recorder.clone(),
+        )) as Arc<dyn S3Client>)
     }
 }
 

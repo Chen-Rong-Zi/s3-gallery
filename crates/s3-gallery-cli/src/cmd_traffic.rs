@@ -1,5 +1,5 @@
-use s3_gallery_core::db::pool::create_pool;
 use s3_gallery_core::db::migrate::run_full_migration;
+use s3_gallery_core::db::pool::create_pool;
 use s3_gallery_core::error::Result;
 use s3_gallery_core::view::traffic::get_traffic_summary;
 use sqlx::SqlitePool;

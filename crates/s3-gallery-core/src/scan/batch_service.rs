@@ -53,7 +53,8 @@ where
 {
     type Response = Vec<std::result::Result<Res, I::Error>>;
     type Error = crate::error::S3GalleryError;
-    type Future = Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
+    type Future =
+        Pin<Box<dyn Future<Output = std::result::Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -99,7 +100,8 @@ mod tests {
     async fn test_batch_service_concurrent() {
         let svc = service_fn(|req: i32| async move { Ok::<_, String>(req * 2) });
         let mut batch = BatchService::new(svc, 10);
-        let results: Vec<std::result::Result<i32, String>> = batch.call(vec![1, 2, 3]).await.unwrap();
+        let results: Vec<std::result::Result<i32, String>> =
+            batch.call(vec![1, 2, 3]).await.unwrap();
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].as_ref().unwrap(), &2);
         assert_eq!(results[1].as_ref().unwrap(), &4);

@@ -1,4 +1,3 @@
-
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -90,7 +89,7 @@ pub async fn download(State(state): State<AppState>, Path(key): Path<String>) ->
 
     // Fetch file metadata from the database
     let file = match sqlx::query_as::<_, FileEntry>(
-        "SELECT * FROM files WHERE host_id = ?1 AND key = ?2 ORDER BY effective_date DESC LIMIT 1"
+        "SELECT * FROM files WHERE host_id = ?1 AND key = ?2 ORDER BY effective_date DESC LIMIT 1",
     )
     .bind(host_id)
     .bind(full_key)

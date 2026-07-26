@@ -130,7 +130,9 @@ pub async fn apply_diff(
             .bind(key)
             .execute(pool)
             .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(format!("Failed to mark file deleted: {e}")))?;
+            .map_err(|e| {
+                crate::error::S3GalleryError::DbError(format!("Failed to mark file deleted: {e}"))
+            })?;
     }
 
     Ok(())

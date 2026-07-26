@@ -1,6 +1,6 @@
 use crate::cli::{Cli, DiffCommands, TagCommands, ViewCommands};
-use s3_gallery_core::db::pool::create_pool;
 use s3_gallery_core::db::migrate::run_full_migration;
+use s3_gallery_core::db::pool::create_pool;
 use s3_gallery_core::error::Result;
 use s3_gallery_core::types::*;
 use s3_gallery_core::view::export::ExportFormat;

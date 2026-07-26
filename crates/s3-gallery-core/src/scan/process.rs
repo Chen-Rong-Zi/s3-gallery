@@ -16,11 +16,24 @@ use crate::error::S3GalleryError;
 use crate::scan::batch_service::BatchService;
 use crate::scan::exif_service::ExifService;
 use crate::scan::pipeline::{
-    ExifRequest, ExifResult, HostProcessResult, ScanRequest, ScanResponse, TagRequest,
-    TagResponse,
+    ExifRequest, ExifResult, HostProcessResult, ScanRequest, ScanResponse, TagRequest, TagResponse,
 };
 use crate::scan::tag_service::TagService;
 use crate::types::ObjectKey;
+
+/// Raw DB row type from sqlx queries listing files.
+type FileRow = (
+    String,
+    String,
+    String,
+    i64,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    bool,
+);
 
 /// ProcessLayer wraps an inner service with metadata extraction.
 pub struct ProcessLayer {
@@ -86,7 +99,7 @@ where
                     }
 
                     // Find pending files
-                    let pending: Vec<(String, String, String, i64, String, Option<String>, String, String, String, bool)> = sqlx::query_as(
+                    let pending: Vec<FileRow> = sqlx::query_as(
                         "SELECT host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted FROM files WHERE host_id = ? AND metadata_state = 'pending' AND is_deleted = 0",
                     )
                     .bind(&host.host_id)

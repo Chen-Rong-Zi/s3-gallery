@@ -1,5 +1,5 @@
+use crate::types::{Etag, FileSize, FileType, HostId, MetadataState, ObjectKey};
 use sea_orm::entity::prelude::*;
-use crate::types::{FileType, MetadataState, ObjectKey, Etag, FileSize, HostId};
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "files")]

@@ -1,8 +1,5 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-};
-use crate::web::handlers::{HandlerResult, render_template};
+use crate::web::handlers::{render_template, HandlerResult};
+use axum::{extract::State, http::StatusCode};
 use s3_gallery_core::entity::file;
 use s3_gallery_core::view::duplicates as duplicates_view;
 use serde_json::json;

@@ -80,7 +80,11 @@ pub async fn run_scan(config: ScanConfig, endpoint: String) -> Result<ScanResult
 
     let mut pipeline = ServiceBuilder::new()
         .layer(AggregateLayer::new(config.sea_db.clone(), Some(handle)))
-        .layer(ProcessLayer::new(config.db.clone(), exif_s3, config.concurrency))
+        .layer(ProcessLayer::new(
+            config.db.clone(),
+            exif_s3,
+            config.concurrency,
+        ))
         .layer(DiffLayer::new(config.db.clone(), config.sea_db.clone()))
         .layer(DiscoverLayer::new(config.db.clone(), config.sea_db.clone()))
         .service(discover_s3);
@@ -124,8 +128,8 @@ pub async fn run_scan(config: ScanConfig, endpoint: String) -> Result<ScanResult
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::pool::create_pool;
     use crate::db::migrate::run_full_migration;
+    use crate::db::pool::create_pool;
     use crate::s3::client::S3Client;
     use crate::s3::mock::MockS3Client;
     use tempfile::tempdir;

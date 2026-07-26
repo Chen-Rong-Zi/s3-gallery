@@ -1,5 +1,5 @@
+use crate::types::{Etag, FileSize, HostId, ObjectKey};
 use sea_orm::entity::prelude::*;
-use crate::types::{HostId, ObjectKey, Etag, FileSize};
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "scan_objects")]

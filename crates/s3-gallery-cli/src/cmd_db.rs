@@ -1,10 +1,10 @@
 use crate::cli::{Cli, DbCommands};
 use s3_gallery_core::db::status::{check_db_status, DbStatus};
 use s3_gallery_core::error::{Result, S3GalleryError};
-use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::s3::config::HostIdentifier;
 use s3_gallery_core::s3::config::OssConfig;
 use s3_gallery_core::s3::real::RealS3Client;
+use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::types::*;
 use std::sync::Arc;
 

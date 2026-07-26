@@ -218,14 +218,8 @@ mod tests {
         let (db, _dir) = setup_test_db().await?;
         seed_test_files(&db).await?;
 
-        let entries = list_directory(
-            &db,
-            "test-host",
-            "",
-            SortField::Name,
-            SortOrder::Ascending,
-        )
-        .await?;
+        let entries =
+            list_directory(&db, "test-host", "", SortField::Name, SortOrder::Ascending).await?;
         assert_eq!(entries.len(), 2);
 
         Ok(())

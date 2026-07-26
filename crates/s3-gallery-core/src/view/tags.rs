@@ -1,8 +1,7 @@
 //! Tag operations.
 
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, JoinType, QueryFilter, QuerySelect,
-    RelationTrait,
+    ColumnTrait, DatabaseConnection, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait,
 };
 
 use crate::entity::{file, file_tag, tag};
@@ -14,10 +13,7 @@ use crate::error::S3GalleryError;
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn list_tags(
-    db: &DatabaseConnection,
-    host_id: Option<&str>,
-) -> Result<Vec<tag::Model>> {
+pub async fn list_tags(db: &DatabaseConnection, host_id: Option<&str>) -> Result<Vec<tag::Model>> {
     let tags: Vec<tag::Model> = if let Some(hid) = host_id {
         tag::Entity::find()
             .distinct()
@@ -111,28 +107,44 @@ mod tests {
         .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         sqlx::query("INSERT INTO tags (tag_name, tag_type) VALUES (?, ?)")
-            .bind("photo").bind("auto")
-            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            .bind("photo")
+            .bind("auto")
+            .execute(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         sqlx::query("INSERT INTO tags (tag_name, tag_type) VALUES (?, ?)")
-            .bind("video").bind("auto")
-            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            .bind("video")
+            .bind("auto")
+            .execute(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         let photo_id: (i64,) = sqlx::query_as("SELECT tag_id FROM tags WHERE tag_name = ?")
             .bind("photo")
-            .fetch_one(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            .fetch_one(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         let video_id: (i64,) = sqlx::query_as("SELECT tag_id FROM tags WHERE tag_name = ?")
             .bind("video")
-            .fetch_one(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            .fetch_one(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
-            .bind("photo001.jpg").bind(photo_id.0)
-            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            .bind("photo001.jpg")
+            .bind(photo_id.0)
+            .execute(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
-            .bind("video.mp4").bind(video_id.0)
-            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            .bind("video.mp4")
+            .bind(video_id.0)
+            .execute(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         Ok(())
     }

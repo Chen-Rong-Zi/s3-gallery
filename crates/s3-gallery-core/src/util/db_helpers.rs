@@ -17,11 +17,7 @@ use crate::error::{Result, S3GalleryError};
 /// # Errors
 ///
 /// Returns `S3GalleryError::DbError` if the query fails.
-pub async fn fetch_all_opt<T>(
-    db: &SqlitePool,
-    sql: &str,
-    host_id: Option<&str>,
-) -> Result<Vec<T>>
+pub async fn fetch_all_opt<T>(db: &SqlitePool, sql: &str, host_id: Option<&str>) -> Result<Vec<T>>
 where
     T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
 {
@@ -49,11 +45,7 @@ where
 /// # Errors
 ///
 /// Returns `S3GalleryError::DbError` if the query fails.
-pub async fn fetch_scalar_opt<T>(
-    db: &SqlitePool,
-    sql: &str,
-    host_id: Option<&str>,
-) -> Result<T>
+pub async fn fetch_scalar_opt<T>(db: &SqlitePool, sql: &str, host_id: Option<&str>) -> Result<T>
 where
     T: for<'a> sqlx::Decode<'a, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
 {

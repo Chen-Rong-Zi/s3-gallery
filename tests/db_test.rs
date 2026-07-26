@@ -680,7 +680,9 @@ async fn test_create_pool_creates_db_file() -> Result<()> {
     assert!(db_path.exists(), "pool creation should create the db file");
 
     // Clean up.
-    db.close().await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+    db.close()
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     Ok(())
 }
 

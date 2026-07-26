@@ -95,12 +95,14 @@ pub async fn get_traffic_summary(
             .try_get("", "total_count")
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        let entry = business_map.entry(business.clone()).or_insert(BusinessTraffic {
-            business: business.clone(),
-            download_bytes: 0,
-            upload_bytes: 0,
-            requests: 0,
-        });
+        let entry = business_map
+            .entry(business.clone())
+            .or_insert(BusinessTraffic {
+                business: business.clone(),
+                download_bytes: 0,
+                upload_bytes: 0,
+                requests: 0,
+            });
         entry.requests += count as u64;
         if direction == "download" {
             entry.download_bytes += bytes as u64;
@@ -131,10 +133,7 @@ pub async fn get_traffic_summary(
 }
 
 /// Query the top 10 files by total bytes transferred.
-async fn get_top_files(
-    db: &DatabaseConnection,
-    host_id: Option<&str>,
-) -> Result<Vec<FileTraffic>> {
+async fn get_top_files(db: &DatabaseConnection, host_id: Option<&str>) -> Result<Vec<FileTraffic>> {
     let (query_str, values): (String, Vec<sea_orm::Value>) = if let Some(hid) = host_id {
         (
             "SELECT file_key, COALESCE(SUM(bytes), 0) as total_bytes \

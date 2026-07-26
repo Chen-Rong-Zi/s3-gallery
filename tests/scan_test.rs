@@ -150,7 +150,8 @@ async fn test_scan_detects_modified_objects() -> Result<()> {
     assert_eq!(result.deleted_files, 0);
 
     // Verify the etag was updated in the DB.
-    let updated = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/photos/img001.jpg").await?;
+    let updated =
+        FileEntry::get_by_key(&sqlite_pool, "test-host", "test/photos/img001.jpg").await?;
     assert_ne!(updated.etag, "old-etag", "etag should have been updated");
     assert_eq!(
         updated.size, 17,
@@ -269,7 +270,8 @@ async fn test_scan_mixed_new_changed_deleted() -> Result<()> {
     assert!(!new_entry.is_deleted);
 
     // Verify deleted.txt was soft-deleted.
-    let deleted_entry = FileEntry::get_by_key(&sqlite_pool, "test-host", "test/deleted.txt").await?;
+    let deleted_entry =
+        FileEntry::get_by_key(&sqlite_pool, "test-host", "test/deleted.txt").await?;
     assert!(deleted_entry.is_deleted);
 
     Ok(())
@@ -292,9 +294,7 @@ async fn test_scan_updates_scan_metadata() -> Result<()> {
 #[tokio::test]
 async fn test_scan_skips_s3_gallery_directory() -> Result<()> {
     let (db, _dir) = common::setup_test_db().await?;
-    let s3 = mock_s3_with_fixtures(vec![
-        ("test/photos/img.jpg", b"data"),
-    ])?;
+    let s3 = mock_s3_with_fixtures(vec![("test/photos/img.jpg", b"data")])?;
     let sqlite_pool = db.get_sqlite_connection_pool().clone();
 
     let config = make_scan_config(Arc::new(s3), db, common::test_bucket()?, "");

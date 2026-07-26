@@ -43,9 +43,7 @@ impl AggregateLayer {
 
 impl<I> Layer<I> for AggregateLayer
 where
-    I: Service<ScanRequest, Response = ScanResponse, Error = S3GalleryError>
-        + Send
-        + 'static,
+    I: Service<ScanRequest, Response = ScanResponse, Error = S3GalleryError> + Send + 'static,
     I::Future: Send,
 {
     type Service = BoxService<ScanRequest, ScanResponse, S3GalleryError>;
@@ -94,22 +92,29 @@ where
                     );
                     db.query_all(stmt)
                         .await
-                        .map_err(|e| S3GalleryError::DbError(format!("Failed to query traffic: {e}")))?
+                        .map_err(|e| {
+                            S3GalleryError::DbError(format!("Failed to query traffic: {e}"))
+                        })?
                         .into_iter()
                         .map(|row| {
-                            let business: String = row.try_get_by("business")
+                            let business: String = row
+                                .try_get_by("business")
                                 .or_else(|_| row.try_get_by(0))
                                 .unwrap_or_default();
-                            let operation: String = row.try_get_by("operation")
+                            let operation: String = row
+                                .try_get_by("operation")
                                 .or_else(|_| row.try_get_by(1))
                                 .unwrap_or_default();
-                            let direction: String = row.try_get_by("direction")
+                            let direction: String = row
+                                .try_get_by("direction")
                                 .or_else(|_| row.try_get_by(2))
                                 .unwrap_or_default();
-                            let bytes: i64 = row.try_get_by("COALESCE(SUM(bytes), 0)")
+                            let bytes: i64 = row
+                                .try_get_by("COALESCE(SUM(bytes), 0)")
                                 .or_else(|_| row.try_get_by(3))
                                 .unwrap_or(0);
-                            let count: i64 = row.try_get_by("COALESCE(SUM(count), 0)")
+                            let count: i64 = row
+                                .try_get_by("COALESCE(SUM(count), 0)")
                                 .or_else(|_| row.try_get_by(4))
                                 .unwrap_or(0);
                             (business, operation, direction, bytes, count)
@@ -128,10 +133,7 @@ where
                     let count = *count as u64;
 
                     let stage = traffic_by_stage.entry(business.clone()).or_default();
-                    stage.insert(
-                        operation.clone(),
-                        TrafficByOperation { count, bytes },
-                    );
+                    stage.insert(operation.clone(), TrafficByOperation { count, bytes });
 
                     if direction == "download" {
                         total_download = total_download.saturating_add(bytes);

@@ -1,5 +1,5 @@
-use sea_orm::entity::prelude::*;
 use crate::types::{HostId, Prefix};
+use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "dir_sizes")]

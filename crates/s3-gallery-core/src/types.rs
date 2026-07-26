@@ -11,13 +11,12 @@ macro_rules! impl_sea_orm_value_for_newtype {
     ($ty:ty) => {
         impl sea_orm::TryGetable for $ty {
             fn try_get_by<I: sea_orm::ColIdx>(
-                res: &sea_orm::QueryResult, idx: I
+                res: &sea_orm::QueryResult,
+                idx: I,
             ) -> std::result::Result<Self, sea_orm::TryGetError> {
                 let s: String = res.try_get_by::<String, I>(idx)?;
                 s.parse::<$ty>().map_err(|e: crate::error::S3GalleryError| {
-                    sea_orm::TryGetError::DbErr(
-                        sea_orm::DbErr::Custom(e.to_string())
-                    )
+                    sea_orm::TryGetError::DbErr(sea_orm::DbErr::Custom(e.to_string()))
                 })
             }
         }
@@ -27,7 +26,9 @@ macro_rules! impl_sea_orm_value_for_newtype {
             }
         }
         impl sea_orm::sea_query::ValueType for $ty {
-            fn try_from(v: sea_orm::Value) -> std::result::Result<Self, sea_orm::sea_query::ValueTypeErr> {
+            fn try_from(
+                v: sea_orm::Value,
+            ) -> std::result::Result<Self, sea_orm::sea_query::ValueTypeErr> {
                 match v {
                     sea_orm::Value::String(Some(s)) => {
                         s.parse().map_err(|_| sea_orm::sea_query::ValueTypeErr)
@@ -65,7 +66,8 @@ impl_sea_orm_value_for_newtype!(FileExtension);
 
 impl sea_orm::TryGetable for FileSize {
     fn try_get_by<I: sea_orm::ColIdx>(
-        res: &sea_orm::QueryResult, idx: I
+        res: &sea_orm::QueryResult,
+        idx: I,
     ) -> std::result::Result<Self, sea_orm::TryGetError> {
         let n: i64 = res.try_get_by::<i64, I>(idx)?;
         Ok(FileSize::new(n.max(0) as u64))
@@ -546,7 +548,9 @@ impl TryFrom<String> for FileExtension {
 // ---------------------------------------------------------------------------
 
 /// A file type enumeration mapping common extensions to their canonical name.
-#[derive(Debug, Clone, PartialEq, Eq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize,
+)]
 #[sea_orm(rs_type = "String", db_type = "Text")]
 #[serde(rename_all = "snake_case")]
 pub enum FileType {
@@ -798,7 +802,9 @@ impl FromStr for FileCategory {
 // ---------------------------------------------------------------------------
 
 /// A metadata namespace, either a standard category or a custom string.
-#[derive(Debug, Clone, PartialEq, Eq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize,
+)]
 #[sea_orm(rs_type = "String", db_type = "Text")]
 #[serde(rename_all = "snake_case")]
 pub enum MetadataNamespace {
@@ -848,7 +854,9 @@ impl std::str::FromStr for MetadataNamespace {
 // ---------------------------------------------------------------------------
 
 /// The state of metadata extraction for a file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize,
+)]
 #[sea_orm(rs_type = "String", db_type = "Text")]
 #[serde(rename_all = "snake_case")]
 pub enum MetadataState {

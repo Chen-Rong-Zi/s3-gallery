@@ -6,8 +6,8 @@ use tower::Service;
 use tower::ServiceBuilder;
 
 use crate::cli::Cli;
-use s3_gallery_core::db::pool::create_pool;
 use s3_gallery_core::db::migrate::run_full_migration;
+use s3_gallery_core::db::pool::create_pool;
 use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
@@ -81,7 +81,15 @@ pub async fn run_init(
     let (bucket, s3, _bucket_str) = setup_scan_common(cli).await?;
     let db = setup_db_pool(cli).await?;
 
-    run_scan_core(s3.clone(), &db, &bucket, &prefix.unwrap_or_default(), &opts, cli).await
+    run_scan_core(
+        s3.clone(),
+        &db,
+        &bucket,
+        &prefix.unwrap_or_default(),
+        &opts,
+        cli,
+    )
+    .await
 }
 
 pub async fn run_update(cli: &Cli, prefix: Option<String>, opts: ScanOptions) -> Result<()> {
@@ -96,7 +104,15 @@ pub async fn run_update(cli: &Cli, prefix: Option<String>, opts: ScanOptions) ->
     let (bucket, s3, _bucket_str) = setup_scan_common(cli).await?;
     let db = setup_db_pool(cli).await?;
 
-    run_scan_core(s3.clone(), &db, &bucket, &prefix.unwrap_or_default(), &opts, cli).await
+    run_scan_core(
+        s3.clone(),
+        &db,
+        &bucket,
+        &prefix.unwrap_or_default(),
+        &opts,
+        cli,
+    )
+    .await
 }
 
 pub async fn run_sync(cli: &Cli, prefix: Option<String>, opts: ScanOptions) -> Result<()> {
@@ -143,7 +159,9 @@ async fn run_scan_core(
     // spawn_batch_writer needs a raw SqlitePool, so create one separately
     let sqlite_pool = SqlitePool::connect(&format!("sqlite:{}?mode=rwc", db_path.display()))
         .await
-        .map_err(|e| S3GalleryError::DbError(format!("Failed to create pool for batch writer: {e}")))?;
+        .map_err(|e| {
+            S3GalleryError::DbError(format!("Failed to create pool for batch writer: {e}"))
+        })?;
     let handle = spawn_batch_writer(sqlite_pool, 5, 100);
     let recorder = Arc::new(TrafficRecorder::new(handle.sender.clone()));
 
@@ -151,7 +169,11 @@ async fn run_scan_core(
     let discover_core = S3Service::new(s3.clone());
     let discover_s3 = ServiceBuilder::new()
         .layer(LogLayer)
-        .layer(TrafficLayer::new(recorder.clone(), "discover", "scan_discover"))
+        .layer(TrafficLayer::new(
+            recorder.clone(),
+            "discover",
+            "scan_discover",
+        ))
         .service(discover_core);
 
     // Build exif_s3 with LogLayer + TrafficLayer for "scan_exif"
@@ -172,7 +194,11 @@ async fn run_scan_core(
 
     let mut pipeline = ServiceBuilder::new()
         .layer(AggregateLayer::new(db.clone(), Some(handle)))
-        .layer(ProcessLayer::new(sqlite_pool.clone(), exif_s3, opts.concurrency))
+        .layer(ProcessLayer::new(
+            sqlite_pool.clone(),
+            exif_s3,
+            opts.concurrency,
+        ))
         .layer(DiffLayer::new(sqlite_pool.clone(), db.clone()))
         .layer(DiscoverLayer::new(sqlite_pool.clone(), db.clone()))
         .service(discover_s3);

@@ -44,7 +44,7 @@ impl BatchWriterHandle {
     pub async fn flush(&self) {
         let (tx, rx) = oneshot::channel();
         if self.flush_tx.send(tx).await.is_ok() {
-            let _ = rx.await;
+            drop(rx.await);
         }
     }
 }
@@ -84,7 +84,10 @@ pub fn spawn_batch_writer(
         writer.run().await;
     });
 
-    BatchWriterHandle { sender: tx, flush_tx }
+    BatchWriterHandle {
+        sender: tx,
+        flush_tx,
+    }
 }
 
 /// Internal batch writer that receives and persists traffic records.
@@ -117,7 +120,12 @@ impl TrafficBatchWriter {
                 }
                 Some(responder) = self.flush_receiver.recv() => {
                     self.flush().await;
-                    let _ = responder.send(());
+                    // Intentionally ignore the send result — the responder may have been
+                    // dropped if the caller lost interest in the flush completion signal.
+                    #[allow(clippy::let_underscore_must_use)]
+                    {
+                        let _ = responder.send(());
+                    }
                 }
                 _ = interval.tick() => {
                     if !self.buffer.is_empty() {
@@ -335,16 +343,18 @@ mod tests {
         assert_eq!(log_rows[1].0, "web_download");
         assert_eq!(log_rows[1].1, "GetObject");
         // web_download should have aggregated bytes: 1000 + 2000 = 3000
-        assert_eq!(log_rows[1].2, 3000, "web_download bytes should be aggregated");
+        assert_eq!(
+            log_rows[1].2, 3000,
+            "web_download bytes should be aggregated"
+        );
         assert_eq!(log_rows[1].3, 2, "web_download count should be aggregated");
 
         // Verify traffic_file_log rows (2 records with non-empty file_key)
-        let file_rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT file_key, bytes FROM traffic_file_log ORDER BY file_key",
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+        let file_rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT file_key, bytes FROM traffic_file_log ORDER BY file_key")
+                .fetch_all(pool)
+                .await
+                .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
 
         assert_eq!(file_rows.len(), 2, "should have 2 file-level rows");
         assert_eq!(file_rows[0].0, "file1.jpg");
@@ -378,12 +388,11 @@ mod tests {
         handle.flush().await; // Wait for flush
 
         // Verify record was written
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM traffic_log WHERE business = 'test_biz'",
-        )
-        .fetch_one(pool)
-        .await
-        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM traffic_log WHERE business = 'test_biz'")
+                .fetch_one(pool)
+                .await
+                .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         assert_eq!(count, 1, "record should be persisted after flush");
 
         Ok(())

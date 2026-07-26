@@ -53,10 +53,16 @@ impl ScanObjectEntry {
             placeholders.push("(?, ?, ?, ?, ?, ?, 0)".to_string());
             batch_params.push(sea_orm::Value::String(Some(Box::new(scan_id.to_string()))));
             batch_params.push(sea_orm::Value::String(Some(Box::new(host_id.to_string()))));
-            batch_params.push(sea_orm::Value::String(Some(Box::new(obj.key.as_str().to_string()))));
-            batch_params.push(sea_orm::Value::String(Some(Box::new(obj.etag.as_str().to_string()))));
+            batch_params.push(sea_orm::Value::String(Some(Box::new(
+                obj.key.as_str().to_string(),
+            ))));
+            batch_params.push(sea_orm::Value::String(Some(Box::new(
+                obj.etag.as_str().to_string(),
+            ))));
             batch_params.push(sea_orm::Value::BigInt(Some(obj.size.as_u64() as i64)));
-            batch_params.push(sea_orm::Value::String(Some(Box::new(obj.last_modified.clone()))));
+            batch_params.push(sea_orm::Value::String(Some(Box::new(
+                obj.last_modified.clone(),
+            ))));
         }
 
         if placeholders.is_empty() {

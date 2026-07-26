@@ -1,10 +1,10 @@
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
+use s3_gallery_core::view::traffic::get_traffic_summary;
 use serde::Deserialize;
 use serde_json::json;
-use s3_gallery_core::view::traffic::get_traffic_summary;
 
-use crate::web::handlers::{HandlerResult, render_template};
+use crate::web::handlers::{render_template, HandlerResult};
 use crate::web::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -53,9 +53,7 @@ pub async fn traffic(
 /// Live traffic JSON endpoint — polled by HTMX every 5 seconds.
 ///
 /// Returns per-business download rates and total requests.
-pub async fn traffic_live(
-    State(state): State<AppState>,
-) -> HandlerResult {
+pub async fn traffic_live(State(state): State<AppState>) -> HandlerResult {
     // Per-business breakdown for last 10 seconds
     let rows: Vec<(String, i64, i64)> = match sqlx::query_as(
         "SELECT business, COALESCE(SUM(bytes), 0), COALESCE(SUM(count), 0) \

@@ -2,7 +2,10 @@
 
 use std::collections::HashMap;
 
-use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter, Statement};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter,
+    Statement,
+};
 
 use crate::entity::file;
 use crate::error::Result;

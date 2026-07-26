@@ -1,8 +1,8 @@
+use crate::web::handlers::{render_template, HandlerResult};
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
 };
-use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::view::timeline_gallery;
 use serde::Deserialize;
 use serde_json::json;

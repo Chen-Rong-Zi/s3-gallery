@@ -431,9 +431,14 @@ async fn e2e_db_push_pull() -> Result<()> {
     let pulled_db = create_pool(&pulled_db_path).await?;
 
     // Verify both DBs have the same file count
-    let files = s3_gallery_core::db::models::FileEntry::count(db.get_sqlite_connection_pool(), &host_id).await?;
-    let pulled_files =
-        s3_gallery_core::db::models::FileEntry::count(pulled_db.get_sqlite_connection_pool(), &host_id).await?;
+    let files =
+        s3_gallery_core::db::models::FileEntry::count(db.get_sqlite_connection_pool(), &host_id)
+            .await?;
+    let pulled_files = s3_gallery_core::db::models::FileEntry::count(
+        pulled_db.get_sqlite_connection_pool(),
+        &host_id,
+    )
+    .await?;
     assert_eq!(pulled_files, files, "pulled DB should have same file count");
 
     // Cleanup

@@ -45,6 +45,7 @@ impl TrafficRecorder {
 
     /// Record a traffic event. Sends to the batch writer (non-blocking).
     /// Drops the record if the channel is full.
+    #[allow(clippy::let_underscore_must_use)]
     pub fn record(&self, record: TrafficRecord) {
         let _ = self.sender.try_send(record);
     }
@@ -137,21 +138,12 @@ impl S3Client for BusinessS3Client {
     ) -> Result<Vec<u8>> {
         let result = self.inner.get_object_range(bucket, key, start, end).await;
         if let Ok(ref data) = result {
-            self.record_traffic(
-                S3Operation::GetObjectRange,
-                data.len() as u64,
-                key.as_str(),
-            );
+            self.record_traffic(S3Operation::GetObjectRange, data.len() as u64, key.as_str());
         }
         result
     }
 
-    async fn put_object(
-        &self,
-        bucket: &BucketName,
-        key: &ObjectKey,
-        body: &[u8],
-    ) -> Result<()> {
+    async fn put_object(&self, bucket: &BucketName, key: &ObjectKey, body: &[u8]) -> Result<()> {
         let result = self.inner.put_object(bucket, key, body).await;
         if result.is_ok() {
             self.record_traffic(S3Operation::PutObject, body.len() as u64, key.as_str());

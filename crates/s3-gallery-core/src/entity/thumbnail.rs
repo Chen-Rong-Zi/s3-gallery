@@ -1,5 +1,5 @@
-use sea_orm::entity::prelude::*;
 use crate::types::{ObjectKey, ThumbnailFormat};
+use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "thumbnails")]

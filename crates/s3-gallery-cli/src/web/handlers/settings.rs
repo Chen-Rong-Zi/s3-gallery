@@ -1,5 +1,5 @@
+use crate::web::handlers::{render_template, HandlerResult};
 use axum::extract::State;
-use crate::web::handlers::{HandlerResult, render_template};
 use serde_json::json;
 
 use crate::web::state::AppState;

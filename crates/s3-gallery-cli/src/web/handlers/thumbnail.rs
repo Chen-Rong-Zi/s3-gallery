@@ -1,4 +1,3 @@
-
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -11,8 +10,8 @@ use s3_gallery_core::{
     thumbnail::generator::generate_thumbnail,
     types::{BucketName, ObjectKey, ThumbnailFormat},
 };
-use sea_orm::ActiveValue::Set;
 use sea_orm::ActiveModelTrait;
+use sea_orm::ActiveValue::Set;
 use sea_orm::ColumnTrait;
 use sea_orm::EntityTrait;
 use sea_orm::QueryFilter;
@@ -140,8 +139,10 @@ pub async fn thumbnail(
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
                             [("content-type", "application/json")],
-                            format!("{{\"error\":\"invalid key\",\"detail\":\"{e}\"}}").into_bytes(),
-                        ).into_response();
+                            format!("{{\"error\":\"invalid key\",\"detail\":\"{e}\"}}")
+                                .into_bytes(),
+                        )
+                            .into_response();
                     }
                 };
                 let _ = thumbnail::ActiveModel {

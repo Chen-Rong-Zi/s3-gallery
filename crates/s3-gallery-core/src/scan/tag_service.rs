@@ -55,7 +55,7 @@ impl Service<TagRequest> for TagService {
                     .await
                     .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
                 sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
-                    .bind(&req.key.to_string())
+                    .bind(req.key.to_string())
                     .bind(tag_id)
                     .execute(&db)
                     .await
@@ -76,7 +76,7 @@ impl Service<TagRequest> for TagService {
                 .await
                 .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
             sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
-                .bind(&req.key.to_string())
+                .bind(req.key.to_string())
                 .bind(exif_tag_id)
                 .execute(&db)
                 .await

@@ -61,8 +61,9 @@ impl Layer<S3Service> for DiscoverLayer {
 
                 let hosts = if let Some(data) = root_config {
                     // CASE 1: Single host at root
-                    let host: HostIdentifier = serde_json::from_slice(&data)
-                        .map_err(|e| S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}")))?;
+                    let host: HostIdentifier = serde_json::from_slice(&data).map_err(|e| {
+                        S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}"))
+                    })?;
 
                     // Save host config
                     sqlx::query(
@@ -80,8 +81,9 @@ impl Layer<S3Service> for DiscoverLayer {
                     .await
                     .map_err(|e| S3GalleryError::DbError(format!("Failed to upsert host config: {e}")))?;
 
-                    let prefix = Prefix::new(scope_prefix_str.clone())
-                        .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
+                    let prefix = Prefix::new(scope_prefix_str.clone()).map_err(|e| {
+                        S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}"))
+                    })?;
 
                     vec![HostInfo {
                         host_id: host.host_id.clone(),
@@ -115,15 +117,20 @@ impl Layer<S3Service> for DiscoverLayer {
                         let dir_prefix_str = format!("{}{}/", scope_prefix_str, dir);
                         let dir_config_key_str =
                             format!("{}{}/.s3-gallery/host.config.json", scope_prefix_str, dir);
-                        let dir_config_key = ObjectKey::new(dir_config_key_str)
-                            .map_err(|e| S3GalleryError::Internal(format!("Invalid config key: {e}")))?;
+                        let dir_config_key = ObjectKey::new(dir_config_key_str).map_err(|e| {
+                            S3GalleryError::Internal(format!("Invalid config key: {e}"))
+                        })?;
 
                         let dir_config = s3.get_object(&bucket, &dir_config_key).await.ok();
 
                         if let Some(data) = dir_config {
                             // This subdirectory is a configured host
-                            let host: HostIdentifier = serde_json::from_slice(&data)
-                                .map_err(|e| S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}")))?;
+                            let host: HostIdentifier =
+                                serde_json::from_slice(&data).map_err(|e| {
+                                    S3GalleryError::Internal(format!(
+                                        "Failed to parse host.config.json: {e}"
+                                    ))
+                                })?;
 
                             sqlx::query(
                                 "INSERT INTO host_config (host_id, host_name, host_type, description, created_at, bucket, endpoint, region) \
@@ -140,8 +147,9 @@ impl Layer<S3Service> for DiscoverLayer {
                             .await
                             .map_err(|e| S3GalleryError::DbError(format!("Failed to upsert host config: {e}")))?;
 
-                            let prefix = Prefix::new(dir_prefix_str.clone())
-                                .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
+                            let prefix = Prefix::new(dir_prefix_str.clone()).map_err(|e| {
+                                S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}"))
+                            })?;
 
                             discovered.push(HostInfo {
                                 host_id: host.host_id.clone(),
@@ -166,8 +174,9 @@ impl Layer<S3Service> for DiscoverLayer {
                             .await
                             .map_err(|e| S3GalleryError::DbError(format!("Failed to upsert host config: {e}")))?;
 
-                            let prefix = Prefix::new(dir_prefix_str.clone())
-                                .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
+                            let prefix = Prefix::new(dir_prefix_str.clone()).map_err(|e| {
+                                S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}"))
+                            })?;
 
                             discovered.push(HostInfo {
                                 host_id: dir.clone(),
@@ -193,7 +202,8 @@ impl Layer<S3Service> for DiscoverLayer {
                         })
                         .collect();
 
-                    ScanObjectEntry::batch_insert(&sea_db, &scan_id, &host.host_id, &filtered).await?;
+                    ScanObjectEntry::batch_insert(&sea_db, &scan_id, &host.host_id, &filtered)
+                        .await?;
                 }
 
                 tracing::info!(

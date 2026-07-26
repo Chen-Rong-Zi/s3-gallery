@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
+use sea_orm::{
+    ColumnTrait, DatabaseConnection, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait,
+};
 
 use crate::entity::{file, file_tag, tag};
 use crate::error::{Result, S3GalleryError};
@@ -49,8 +51,7 @@ pub async fn get_timeline_gallery(
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?
     } else {
-        let mut query = file::Entity::find()
-            .filter(file::Column::IsDeleted.eq(false));
+        let mut query = file::Entity::find().filter(file::Column::IsDeleted.eq(false));
 
         if let Some(hid) = host_id {
             query = query.filter(file::Column::HostId.eq(hid));

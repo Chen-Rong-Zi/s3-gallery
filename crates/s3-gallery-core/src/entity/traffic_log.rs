@@ -1,5 +1,5 @@
+use crate::types::{Direction, HostId, S3Operation};
 use sea_orm::entity::prelude::*;
-use crate::types::{HostId, S3Operation, Direction};
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "traffic_log")]

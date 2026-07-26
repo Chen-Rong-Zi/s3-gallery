@@ -1,6 +1,8 @@
 //! Search functionality.
 
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait};
+use sea_orm::{
+    ColumnTrait, DatabaseConnection, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait,
+};
 
 use crate::entity::{file, file_tag, tag};
 use crate::error::Result;
@@ -114,20 +116,31 @@ mod tests {
         let pool = db.get_sqlite_connection_pool();
 
         sqlx::query("INSERT INTO tags (tag_name, tag_type) VALUES (?, ?)")
-            .bind("photo").bind("auto")
-            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            .bind("photo")
+            .bind("auto")
+            .execute(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         let tag_id: (i64,) = sqlx::query_as("SELECT tag_id FROM tags WHERE tag_name = ?")
             .bind("photo")
-            .fetch_one(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            .fetch_one(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
-            .bind("vacation/photo001.jpg").bind(tag_id.0)
-            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            .bind("vacation/photo001.jpg")
+            .bind(tag_id.0)
+            .execute(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
-            .bind("family/portrait.jpg").bind(tag_id.0)
-            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            .bind("family/portrait.jpg")
+            .bind(tag_id.0)
+            .execute(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         Ok(())
     }

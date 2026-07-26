@@ -66,7 +66,11 @@ impl MigrationTrait for InitialMigration {
                     .col(ColumnDef::new(Alias::new("key")).string().not_null())
                     .col(ColumnDef::new(Alias::new("etag")).string().not_null())
                     .col(ColumnDef::new(Alias::new("size")).big_integer().not_null())
-                    .col(ColumnDef::new(Alias::new("last_modified")).string().not_null())
+                    .col(
+                        ColumnDef::new(Alias::new("last_modified"))
+                            .string()
+                            .not_null(),
+                    )
                     .col(ColumnDef::new(Alias::new("content_type")).string())
                     .col(ColumnDef::new(Alias::new("file_type")).string().not_null())
                     .col(
@@ -107,7 +111,11 @@ impl MigrationTrait for InitialMigration {
                     .col(ColumnDef::new(Alias::new("namespace_custom")).string())
                     .col(ColumnDef::new(Alias::new("key")).string().not_null())
                     .col(ColumnDef::new(Alias::new("value")).string().not_null())
-                    .col(ColumnDef::new(Alias::new("extracted_at")).string().not_null())
+                    .col(
+                        ColumnDef::new(Alias::new("extracted_at"))
+                            .string()
+                            .not_null(),
+                    )
                     .col(
                         ColumnDef::new(Alias::new("partial"))
                             .boolean()
@@ -311,7 +319,11 @@ impl MigrationTrait for InitialMigration {
                     .col(ColumnDef::new(Alias::new("host_id")).string().not_null())
                     .col(ColumnDef::new(Alias::new("etag")).string().not_null())
                     .col(ColumnDef::new(Alias::new("size")).big_integer().not_null())
-                    .col(ColumnDef::new(Alias::new("last_modified")).string().not_null())
+                    .col(
+                        ColumnDef::new(Alias::new("last_modified"))
+                            .string()
+                            .not_null(),
+                    )
                     .col(
                         ColumnDef::new(Alias::new("is_deleted"))
                             .boolean()
@@ -346,7 +358,11 @@ impl MigrationTrait for InitialMigration {
                     .col(ColumnDef::new(Alias::new("direction")).string().not_null())
                     .col(ColumnDef::new(Alias::new("bytes")).big_integer().not_null())
                     .col(ColumnDef::new(Alias::new("count")).big_integer().not_null())
-                    .col(ColumnDef::new(Alias::new("recorded_at")).string().not_null())
+                    .col(
+                        ColumnDef::new(Alias::new("recorded_at"))
+                            .string()
+                            .not_null(),
+                    )
                     .to_owned(),
             )
             .await?;
@@ -369,7 +385,11 @@ impl MigrationTrait for InitialMigration {
                     .col(ColumnDef::new(Alias::new("business")).string().not_null())
                     .col(ColumnDef::new(Alias::new("bytes")).big_integer().not_null())
                     .col(ColumnDef::new(Alias::new("count")).big_integer().not_null())
-                    .col(ColumnDef::new(Alias::new("recorded_at")).string().not_null())
+                    .col(
+                        ColumnDef::new(Alias::new("recorded_at"))
+                            .string()
+                            .not_null(),
+                    )
                     .to_owned(),
             )
             .await?;
@@ -409,9 +429,20 @@ impl MigrationTrait for InitialMigration {
 
         // ── Indexes ──
         let index_table_names = [
-            "files", "files", "files", "metadata", "metadata", "metadata", "tags",
-            "thumbnails", "traffic_log", "traffic_log", "traffic_file_log",
-            "traffic_file_log", "scan_objects", "scan_objects",
+            "files",
+            "files",
+            "files",
+            "metadata",
+            "metadata",
+            "metadata",
+            "tags",
+            "thumbnails",
+            "traffic_log",
+            "traffic_log",
+            "traffic_file_log",
+            "traffic_file_log",
+            "scan_objects",
+            "scan_objects",
         ];
         let index_names = [
             "idx_files_file_type",
@@ -447,11 +478,17 @@ impl MigrationTrait for InitialMigration {
         ];
 
         for (i, name) in index_names.iter().enumerate() {
+            let table_name = index_table_names.get(i).ok_or_else(|| {
+                DbErr::Custom(format!("Missing table name for index at position {i}"))
+            })?;
+            let cols = index_cols.get(i).ok_or_else(|| {
+                DbErr::Custom(format!("Missing columns for index at position {i}"))
+            })?;
             let mut idx = Index::create()
                 .name(*name)
-                .table(Alias::new(index_table_names[i]))
+                .table(Alias::new(*table_name))
                 .to_owned();
-            for col in index_cols[i] {
+            for col in *cols {
                 idx.col(Alias::new(*col));
             }
             manager.create_index(idx).await?;

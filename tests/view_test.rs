@@ -87,7 +87,10 @@ async fn test_local_view_search_by_name() -> Result<()> {
     // Search for "vacation"
     let result = view.search_by_name("test-host", "vacation").await?;
     assert_eq!(result.total_count, 2, "should find 2 vacation files");
-    assert!(result.files.iter().all(|f| f.key.as_str().contains("vacation")));
+    assert!(result
+        .files
+        .iter()
+        .all(|f| f.key.as_str().contains("vacation")));
 
     // Search for "report"
     let result = view.search_by_name("test-host", "report").await?;

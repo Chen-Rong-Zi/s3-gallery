@@ -1,6 +1,8 @@
 //! Find duplicate files.
 
-use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder,
+};
 
 use crate::entity::file;
 use crate::error::Result;

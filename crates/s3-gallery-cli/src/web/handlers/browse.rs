@@ -1,8 +1,8 @@
+use crate::web::handlers::{render_template, HandlerResult};
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
 };
-use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::types::{FileSize, SortField, SortOrder};
 use s3_gallery_core::view::ls;
 use serde::Deserialize;
@@ -196,12 +196,12 @@ pub async fn browse(
     // Validate host_id is known
     if state.get_host(host_id).is_none() {
         return HandlerResult::Error(
-                StatusCode::NOT_FOUND,
-                json!({
-                    "error": "host not found",
-                    "detail": format!("No host: {host_id}")
-                }),
-            );
+            StatusCode::NOT_FOUND,
+            json!({
+                "error": "host not found",
+                "detail": format!("No host: {host_id}")
+            }),
+        );
     }
 
     // Fetch directory listing using ls module directly

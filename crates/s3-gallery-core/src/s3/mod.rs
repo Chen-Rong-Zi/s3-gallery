@@ -1,10 +1,10 @@
 pub mod client;
-pub mod layers;
-pub mod s3_service;
 pub mod config;
+pub mod layers;
 pub mod lock;
 pub mod logged;
 pub mod mock;
+pub mod real;
+pub mod s3_service;
 pub mod traffic_persist;
 pub mod traffic_recorder;
-pub mod real;
