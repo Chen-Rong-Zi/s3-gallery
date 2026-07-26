@@ -11,17 +11,18 @@
 
 use std::sync::Arc;
 
+use s3_gallery_core::db::migrate::run_full_migration;
 use s3_gallery_core::db::pool::create_pool;
-use s3_gallery_core::db::schema::run_migrations;
 use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
 use s3_gallery_core::s3::real::RealS3Client;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::scan::scanner::{run_scan, ScanConfig};
-use s3_gallery_core::types::{BucketName, ObjectKey, Prefix, SortField, SortOrder};
+use s3_gallery_core::entity::file;
+use s3_gallery_core::types::{BucketName, HostId, ObjectKey, Prefix, SortField, SortOrder};
 use s3_gallery_core::view::LocalView;
-use sea_orm::DatabaseConnection;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ async fn setup_e2e_db() -> Result<(DatabaseConnection, TempDir)> {
     let dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     let db_path = dir.path().join("e2e-cli-test.db");
     let db = create_pool(&db_path).await?;
-    run_migrations(db.get_sqlite_connection_pool()).await?;
+    run_full_migration(&db).await?;
     Ok((db, dir))
 }
 
@@ -431,14 +432,14 @@ async fn e2e_db_push_pull() -> Result<()> {
     let pulled_db = create_pool(&pulled_db_path).await?;
 
     // Verify both DBs have the same file count
-    let files =
-        s3_gallery_core::db::models::FileEntry::count(db.get_sqlite_connection_pool(), &host_id)
-            .await?;
-    let pulled_files = s3_gallery_core::db::models::FileEntry::count(
-        pulled_db.get_sqlite_connection_pool(),
-        &host_id,
-    )
-    .await?;
+    let files = file::Entity::find()
+        .filter(file::Column::HostId.eq(HostId::new(&host_id)?))
+        .count(&db)
+        .await?;
+    let pulled_files = file::Entity::find()
+        .filter(file::Column::HostId.eq(HostId::new(&host_id)?))
+        .count(&pulled_db)
+        .await?;
     assert_eq!(pulled_files, files, "pulled DB should have same file count");
 
     // Cleanup

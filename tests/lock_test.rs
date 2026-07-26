@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use s3_gallery_core::error::Result;
+use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::lock::{acquire_lock, check_lock};
 use s3_gallery_core::s3::mock::MockS3Client;
@@ -77,7 +77,11 @@ async fn test_lock_contention_is_prevented() -> Result<()> {
                 "error should mention contention: {err_str}"
             );
         }
-        Ok(_) => panic!("expected Err, got Ok"),
+        Ok(_) => {
+            return Err(S3GalleryError::LockAcquisition(
+                "expected Err, got Ok".to_string(),
+            ));
+        }
     }
     Ok(())
 }
