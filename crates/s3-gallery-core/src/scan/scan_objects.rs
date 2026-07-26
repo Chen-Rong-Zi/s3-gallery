@@ -135,7 +135,7 @@ mod tests {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
         let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-        let pool = sqlx::SqlitePool::connect(&db_url)
+        let _pool = sqlx::SqlitePool::connect(&db_url)
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db = sea_orm::Database::connect(&db_url)

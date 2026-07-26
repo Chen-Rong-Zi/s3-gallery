@@ -129,7 +129,6 @@ pub async fn run_scan(config: ScanConfig, endpoint: String) -> Result<ScanResult
 mod tests {
     use super::*;
     use crate::db::migrate::run_full_migration;
-    use crate::db::pool::create_pool;
     use crate::s3::client::S3Client;
     use crate::s3::mock::MockS3Client;
     use tempfile::tempdir;

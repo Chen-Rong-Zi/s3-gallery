@@ -251,7 +251,7 @@ mod tests {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
         let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-        let pool = sqlx::SqlitePool::connect(&db_url)
+        let _pool = sqlx::SqlitePool::connect(&db_url)
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db = sea_orm::Database::connect(&db_url)
@@ -259,7 +259,7 @@ mod tests {
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         run_full_migration(&db).await?;
 
-        let layer = AggregateLayer::new(db, None);
+        let _layer = AggregateLayer::new(db, None);
         // Just verify it constructs without error
         assert!(true);
 

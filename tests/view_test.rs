@@ -10,7 +10,7 @@ use s3_gallery_core::types::{
 };
 use s3_gallery_core::view::export::ExportFormat;
 use s3_gallery_core::view::LocalView;
-use sea_orm::{ActiveValue::Set, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ActiveValue::Set, DatabaseConnection, EntityTrait};
 
 mod common;
 
