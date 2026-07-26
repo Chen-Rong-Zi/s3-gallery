@@ -112,7 +112,7 @@ pub async fn run_view(cli: &Cli, _host: &str, view_cmd: &ViewCommands) -> Result
             TagCommands::List => {
                 let tags = view.list_tags(_host).await?;
                 for tag in &tags {
-                    println!("{} ({})", tag.tag_name, format!("{:?}", tag.tag_type));
+                    println!("{} ({:?})", tag.tag_name, tag.tag_type);
                 }
             }
             TagCommands::Files { tag } => {

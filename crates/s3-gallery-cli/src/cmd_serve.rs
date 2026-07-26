@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use sea_orm::DatabaseConnection;
 use sqlx::SqlitePool;
 use tokio::net::TcpListener;
 use tower::layer::Layer;

@@ -11,6 +11,7 @@ use s3_gallery_core::{
 use crate::web::state::AppState;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
 struct FileEntry {
     pub host_id: String,
     pub key: String,

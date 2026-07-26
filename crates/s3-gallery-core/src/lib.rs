@@ -24,4 +24,3 @@ pub mod thumbnail;
 pub mod types;
 pub mod util;
 pub mod view;
-// test pre-commit

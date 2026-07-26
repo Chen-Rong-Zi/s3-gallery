@@ -6,10 +6,8 @@ use axum::{
 use s3_gallery_core::entity::file;
 use s3_gallery_core::entity::metadata;
 use s3_gallery_core::entity::thumbnail;
-use s3_gallery_core::error::S3GalleryError;
 use s3_gallery_core::types::FileSize;
 use sea_orm::ColumnTrait;
-use sea_orm::Condition;
 use sea_orm::EntityTrait;
 use sea_orm::QueryFilter;
 use serde_json::json;
@@ -72,8 +70,6 @@ pub async fn file_detail(State(state): State<AppState>, Path(key): Path<String>)
             }),
         );
     }
-
-    let pool = state.db.get_sqlite_connection_pool();
 
     // Fetch the file entry by its key.
     let file = match file::Entity::find()

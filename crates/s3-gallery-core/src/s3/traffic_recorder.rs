@@ -45,6 +45,8 @@ impl TrafficRecorder {
 
     /// Record a traffic event. Sends to the batch writer (non-blocking).
     /// Drops the record if the channel is full.
+    // Intentionally ignore the try_send result — when the channel is full,
+    // the record is dropped as a backpressure mechanism rather than blocking.
     #[allow(clippy::let_underscore_must_use)]
     pub fn record(&self, record: TrafficRecord) {
         let _ = self.sender.try_send(record);
