@@ -29,20 +29,20 @@
 
 use std::sync::Arc;
 
-use sqlx::SqlitePool;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use tempfile::TempDir;
 
-use s3_gallery_core::db::models::FileEntry;
+use s3_gallery_core::db::migrate::run_full_migration;
 use s3_gallery_core::db::pool::create_pool;
-use s3_gallery_core::db::schema::run_migrations;
+use s3_gallery_core::entity::file;
 use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
 use s3_gallery_core::s3::lock::{acquire_lock, check_lock};
-use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::s3::real::RealS3Client;
+use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::scan::scanner::{run_scan, ScanConfig};
-use s3_gallery_core::types::{BucketName, ObjectKey};
+use s3_gallery_core::types::{BucketName, FileType, HostId, ObjectKey, Prefix};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -54,12 +54,12 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 /// Set up a temporary database with migrations.
-async fn setup_e2e_db() -> Result<(SqlitePool, TempDir)> {
+async fn setup_e2e_db() -> Result<(DatabaseConnection, TempDir)> {
     let dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     let db_path = dir.path().join("e2e-test.db");
-    let pool = create_pool(&db_path).await?;
-    run_migrations(&pool).await?;
-    Ok((pool, dir))
+    let db = create_pool(&db_path).await?;
+    run_full_migration(&db).await?;
+    Ok((db, dir))
 }
 
 /// Ensure the test bucket exists.  If it doesn't, try to create it.
@@ -143,7 +143,7 @@ async fn e2e_s3_list_objects() -> Result<()> {
     s3.put_object(&bucket, &key1, b"content a").await?;
     s3.put_object(&bucket, &key2, b"content b").await?;
 
-    let prefix_key = ObjectKey::new(&prefix)?;
+    let prefix_key = Prefix::new(&prefix)?;
     let results = s3.list_objects(&bucket, &prefix_key).await?;
     assert_eq!(results.len(), 2);
 
@@ -286,31 +286,39 @@ async fn e2e_scan_real_bucket() -> Result<()> {
 
     let s3 = Arc::new(real) as Arc<dyn S3Client>;
     let bucket = BucketName::new(env_or("S3_BUCKET", "s3-gallery-e2e-test"))?;
-    let (pool, _dir) = setup_e2e_db().await?;
+    let (db, _dir) = setup_e2e_db().await?;
+    let pool = db.get_sqlite_connection_pool().clone();
 
     // Use prefix WITHOUT trailing slash to avoid double-slash in lock key
     let prefix = format!("e2e-scan-{}", uuid::Uuid::new_v4());
     let key = ObjectKey::new(format!("{prefix}/test.jpg"))?;
     s3.put_object(&bucket, &key, b"fake image data").await?;
 
+    let sea_db = db.clone();
     let scan_config = ScanConfig {
         host_id: "e2e-test-host".to_string(),
         s3: S3Service::new(s3.clone()),
         db: pool.clone(),
+        sea_db,
         bucket: bucket.clone(),
-        prefix: ObjectKey::new(&prefix)?,
+        prefix: Prefix::new(&prefix)?,
         concurrency: 4,
         extract_metadata: false,
         generate_thumbnails: false,
         client_id: "e2e-test-client".to_string(),
     };
 
-    let result = run_scan(scan_config).await?;
+    let result = run_scan(scan_config, String::new()).await?;
     assert_eq!(result.total_files, 1, "should find the test object");
     assert_eq!(result.new_files, 1);
 
-    let entry = FileEntry::get_by_key(&pool, "e2e-test-host", key.as_str()).await?;
-    assert_eq!(entry.file_type, "jpeg");
+    let entry = file::Entity::find()
+        .filter(file::Column::HostId.eq(HostId::new("e2e-test-host")?))
+        .filter(file::Column::Key.eq(key.clone()))
+        .one(&db)
+        .await?
+        .ok_or_else(|| S3GalleryError::NotFound("file entry not found".to_string()))?;
+    assert_eq!(entry.file_type, FileType::Jpeg);
     assert!(!entry.is_deleted);
 
     s3.delete_object(&bucket, &key).await?;

@@ -1,15 +1,18 @@
 //! Search functionality.
 
-use sqlx::SqlitePool;
+use sea_orm::{
+    ColumnTrait, DatabaseConnection, EntityTrait, JoinType, QueryFilter, QuerySelect, RelationTrait,
+};
 
-use crate::db::models::FileEntry;
+use crate::entity::{file, file_tag, tag};
 use crate::error::Result;
+use crate::error::S3GalleryError;
 
 /// Search results containing matching files.
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     /// Matching files.
-    pub files: Vec<FileEntry>,
+    pub files: Vec<file::Model>,
     /// Total count of matching files.
     pub total_count: u64,
 }
@@ -19,17 +22,20 @@ pub struct SearchResult {
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn search_by_name(db: &SqlitePool, host_id: &str, query: &str) -> Result<SearchResult> {
-    let pattern = format!("%{query}%");
+pub async fn search_by_name(
+    db: &DatabaseConnection,
+    host_id: &str,
+    query: &str,
+) -> Result<SearchResult> {
+    let s = file::Entity::find()
+        .filter(file::Column::IsDeleted.eq(false))
+        .filter(file::Column::HostId.eq(host_id))
+        .filter(file::Column::Key.contains(query));
 
-    let files: Vec<FileEntry> = sqlx::query_as(
-        "SELECT * FROM files WHERE host_id = ? AND key LIKE ? AND is_deleted = 0 ORDER BY key",
-    )
-    .bind(host_id)
-    .bind(pattern)
-    .fetch_all(db)
-    .await
-    .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+    let files = s
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     let total_count = u64::try_from(files.len()).unwrap_or(0);
 
@@ -41,19 +47,20 @@ pub async fn search_by_name(db: &SqlitePool, host_id: &str, query: &str) -> Resu
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn search_by_tag(db: &SqlitePool, host_id: &str, tag_name: &str) -> Result<SearchResult> {
-    let files: Vec<FileEntry> = sqlx::query_as(
-        "SELECT f.* FROM files f
-         INNER JOIN file_tags ft ON f.key = ft.file_key
-         INNER JOIN tags t ON ft.tag_id = t.tag_id
-         WHERE t.tag_name = ? AND f.host_id = ? AND f.is_deleted = 0
-         ORDER BY f.key",
-    )
-    .bind(tag_name)
-    .bind(host_id)
-    .fetch_all(db)
-    .await
-    .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+pub async fn search_by_tag(
+    db: &DatabaseConnection,
+    host_id: &str,
+    tag_name: &str,
+) -> Result<SearchResult> {
+    let files = file::Entity::find()
+        .join_rev(JoinType::InnerJoin, file_tag::Relation::File.def())
+        .join(JoinType::InnerJoin, file_tag::Relation::Tag.def())
+        .filter(tag::Column::TagName.eq(tag_name))
+        .filter(file::Column::HostId.eq(host_id))
+        .filter(file::Column::IsDeleted.eq(false))
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     let total_count = u64::try_from(files.len()).unwrap_or(0);
 
@@ -63,115 +70,87 @@ pub async fn search_by_tag(db: &SqlitePool, host_id: &str, tag_name: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models::{FileEntry, FileTagEntry, TagEntry};
+    use crate::db::migrate::run_full_migration;
     use crate::db::pool::create_pool;
-    use crate::db::schema::run_migrations;
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        run_full_migration(&db).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "vacation/photo001.jpg".to_string(),
-                etag: "\"abc123\"".to_string(),
-                size: 1024,
-                last_modified: "2024-01-01T00:00:00Z".to_string(),
-                content_type: Some("image/jpeg".to_string()),
-                file_type: "jpeg".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("vacation/photo001.jpg").bind("\"abc123\"")
+        .bind(1024i64).bind("2024-01-01T00:00:00Z").bind(Some("image/jpeg"))
+        .bind("jpeg").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "work/report.pdf".to_string(),
-                etag: "\"def456\"".to_string(),
-                size: 2048,
-                last_modified: "2024-01-02T00:00:00Z".to_string(),
-                content_type: Some("application/pdf".to_string()),
-                file_type: "pdf".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("work/report.pdf").bind("\"def456\"")
+        .bind(2048i64).bind("2024-01-02T00:00:00Z").bind(Some("application/pdf"))
+        .bind("pdf").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "family/portrait.jpg".to_string(),
-                etag: "\"ghi789\"".to_string(),
-                size: 4096,
-                last_modified: "2024-02-01T00:00:00Z".to_string(),
-                content_type: Some("image/jpeg".to_string()),
-                file_type: "jpeg".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("family/portrait.jpg").bind("\"ghi789\"")
+        .bind(4096i64).bind("2024-02-01T00:00:00Z").bind(Some("image/jpeg"))
+        .bind("jpeg").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         Ok(())
     }
 
-    async fn seed_test_tags(pool: &SqlitePool) -> Result<()> {
-        TagEntry::insert(
-            pool,
-            &TagEntry {
-                tag_id: 0,
-                tag_name: "photo".to_string(),
-                tag_type: "auto".to_string(),
-            },
-        )
-        .await?;
+    async fn seed_test_tags(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
 
-        let tag = TagEntry::get_by_name(pool, "photo").await?;
+        sqlx::query("INSERT INTO tags (tag_name, tag_type) VALUES (?, ?)")
+            .bind("photo")
+            .bind("auto")
+            .execute(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileTagEntry::insert(
-            pool,
-            &FileTagEntry {
-                file_key: "vacation/photo001.jpg".to_string(),
-                tag_id: tag.tag_id,
-            },
-        )
-        .await?;
+        let tag_id: (i64,) = sqlx::query_as("SELECT tag_id FROM tags WHERE tag_name = ?")
+            .bind("photo")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileTagEntry::insert(
-            pool,
-            &FileTagEntry {
-                file_key: "family/portrait.jpg".to_string(),
-                tag_id: tag.tag_id,
-            },
-        )
-        .await?;
+        sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
+            .bind("vacation/photo001.jpg")
+            .bind(tag_id.0)
+            .execute(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+
+        sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
+            .bind("family/portrait.jpg")
+            .bind(tag_id.0)
+            .execute(pool)
+            .await
+            .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         Ok(())
     }
 
     #[tokio::test]
     async fn test_search_by_name() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let result = search_by_name(&pool, "test-host", "jpg").await?;
+        let result = search_by_name(&db, "test-host", "jpg").await?;
         assert_eq!(result.total_count, 2);
 
         Ok(())
@@ -179,22 +158,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_by_name_partial() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let result = search_by_name(&pool, "test-host", "vacation").await?;
+        let result = search_by_name(&db, "test-host", "vacation").await?;
         assert_eq!(result.total_count, 1);
-        assert_eq!(result.files[0].key, "vacation/photo001.jpg");
+        assert_eq!(result.files[0].key.as_str(), "vacation/photo001.jpg");
 
         Ok(())
     }
 
     #[tokio::test]
     async fn test_search_by_name_no_match() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let result = search_by_name(&pool, "test-host", "nonexistent").await?;
+        let result = search_by_name(&db, "test-host", "nonexistent").await?;
         assert_eq!(result.total_count, 0);
         assert!(result.files.is_empty());
 
@@ -203,11 +182,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_by_tag() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
-        seed_test_tags(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
+        seed_test_tags(&db).await?;
 
-        let result = search_by_tag(&pool, "test-host", "photo").await?;
+        let result = search_by_tag(&db, "test-host", "photo").await?;
         assert_eq!(result.total_count, 2);
 
         Ok(())
@@ -215,10 +194,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_by_tag_no_match() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let result = search_by_tag(&pool, "test-host", "nonexistent").await?;
+        let result = search_by_tag(&db, "test-host", "nonexistent").await?;
         assert_eq!(result.total_count, 0);
         assert!(result.files.is_empty());
 

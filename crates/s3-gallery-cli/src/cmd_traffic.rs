@@ -1,5 +1,5 @@
+use s3_gallery_core::db::migrate::run_full_migration;
 use s3_gallery_core::db::pool::create_pool;
-use s3_gallery_core::db::schema::run_migrations;
 use s3_gallery_core::error::Result;
 use s3_gallery_core::view::traffic::get_traffic_summary;
 
@@ -12,11 +12,11 @@ pub async fn run_traffic_summary(
     since: Option<String>,
     until: Option<String>,
 ) -> Result<()> {
-    let pool = create_pool(&cli.db_path).await?;
-    run_migrations(&pool).await?;
+    let db = create_pool(&cli.db_path).await?;
+    run_full_migration(&db).await?;
 
     let summary = get_traffic_summary(
-        &pool,
+        &db,
         host.as_deref(),
         Some(&period),
         since.as_deref(),
@@ -59,8 +59,9 @@ pub async fn run_traffic_summary(
 }
 
 pub async fn run_traffic_live(cli: &Cli, interval: u64) -> Result<()> {
-    let pool = create_pool(&cli.db_path).await?;
-    run_migrations(&pool).await?;
+    let db = create_pool(&cli.db_path).await?;
+    run_full_migration(&db).await?;
+    let pool = db.get_sqlite_connection_pool().clone();
 
     println!("Live Traffic (refreshing every {}s)", interval);
     println!("{}", "\u{2500}".repeat(50));

@@ -1,8 +1,9 @@
+use crate::web::handlers::{render_template, HandlerResult};
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
 };
-use crate::web::handlers::{HandlerResult, render_template};
+use s3_gallery_core::entity::file;
 use s3_gallery_core::view::search as search_view;
 use serde::Deserialize;
 use serde_json::json;
@@ -20,8 +21,8 @@ pub struct SearchQuery {
     pub host: Option<String>,
 }
 
-/// Convert a FileEntry to a serde_json::Value for template rendering.
-fn file_entry_to_json(file: &s3_gallery_core::db::models::FileEntry) -> serde_json::Value {
+/// Convert a file::Model to a serde_json::Value for template rendering.
+fn file_entry_to_json(file: &file::Model) -> serde_json::Value {
     json!({
         "key": file.key,
         "etag": file.etag,
@@ -61,7 +62,7 @@ pub async fn search(
         .host
         .as_deref()
         .and_then(|h| state.get_host(h).map(|_| h.to_string()))
-        .or_else(|| state.hosts.first().map(|h| h.host_id.clone()))
+        .or_else(|| state.hosts.first().map(|h| h.host_id.to_string()))
     {
         Some(h) => h,
         None => {
@@ -75,14 +76,12 @@ pub async fn search(
         }
     };
 
-    let pool = &state.db;
-
     let files = if let Some(ref query) = params.q {
         let query_trimmed = query.trim();
         if query_trimmed.is_empty() {
             Vec::new()
         } else {
-            match search_view::search_by_name(pool, &host_id, query_trimmed).await {
+            match search_view::search_by_name(&state.db, &host_id, query_trimmed).await {
                 Ok(result) => result.files,
                 Err(e) => {
                     tracing::error!(handler = "search", query = %query_trimmed, error = %e, "search by name failed");
@@ -101,7 +100,7 @@ pub async fn search(
         if tag_trimmed.is_empty() {
             Vec::new()
         } else {
-            match search_view::search_by_tag(pool, &host_id, tag_trimmed).await {
+            match search_view::search_by_tag(&state.db, &host_id, tag_trimmed).await {
                 Ok(result) => result.files,
                 Err(e) => {
                     tracing::error!(handler = "search", tag = %tag_trimmed, error = %e, "search by tag failed");

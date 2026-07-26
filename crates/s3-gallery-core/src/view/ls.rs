@@ -1,13 +1,13 @@
 //! Directory listing functionality.
 
 use std::collections::HashSet;
-use std::str::FromStr;
 
-use sqlx::SqlitePool;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder};
 
-use crate::db::models::DirSizeEntry;
-use crate::db::models::FileEntry;
+use crate::entity::dir_size;
+use crate::entity::file;
 use crate::error::Result;
+use crate::error::S3GalleryError;
 use crate::types::{FileSize, FileType, SortField, SortOrder};
 
 /// A single entry in a directory listing.
@@ -39,12 +39,11 @@ impl LsEntry {
         }
     }
 
-    fn from_file(file: &FileEntry, name: String) -> Result<Self> {
-        let file_type = FileType::from_str(&file.file_type).unwrap_or(FileType::Unknown);
-        let size = u64::try_from(file.size).unwrap_or(0);
+    fn from_file(file: &file::Model, name: String) -> Result<Self> {
+        let size = file.size.as_u64();
         Ok(Self {
             name,
-            file_type,
+            file_type: file.file_type.clone(),
             size: FileSize::new(size),
             file_count: 0,
             last_modified: file.last_modified.clone(),
@@ -59,13 +58,20 @@ impl LsEntry {
 ///
 /// Returns an error if the database query fails.
 pub async fn list_directory(
-    db: &SqlitePool,
+    db: &DatabaseConnection,
     host_id: &str,
     prefix: &str,
     sort_by: SortField,
     sort_order: SortOrder,
 ) -> Result<Vec<LsEntry>> {
-    let files = FileEntry::list_by_prefix(db, host_id, prefix).await?;
+    let files = file::Entity::find()
+        .filter(file::Column::HostId.eq(host_id))
+        .filter(file::Column::IsDeleted.eq(false))
+        .filter(file::Column::Key.starts_with(prefix))
+        .order_by(file::Column::Key, Order::Asc)
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     let effective_prefix = if prefix.is_empty() {
         String::new()
@@ -77,7 +83,7 @@ pub async fn list_directory(
     let mut file_entries = Vec::new();
 
     for file in files {
-        let key = &file.key;
+        let key = file.key.as_str();
         if !key.starts_with(&effective_prefix) {
             continue;
         }
@@ -96,12 +102,17 @@ pub async fn list_directory(
     }
 
     // Fetch directory sizes from dir_sizes table
-    let dir_sizes = DirSizeEntry::list_by_prefix(db, host_id, prefix)
+    let dir_sizes = dir_size::Entity::find()
+        .filter(dir_size::Column::HostId.eq(host_id))
+        .filter(dir_size::Column::DirPath.ne(prefix))
+        .filter(dir_size::Column::DirPath.like(format!("{}%", prefix)))
+        .order_by(dir_size::Column::DirPath, Order::Asc)
+        .all(db)
         .await
         .unwrap_or_default();
     let size_map: std::collections::HashMap<String, (i64, i64)> = dir_sizes
         .iter()
-        .map(|d| (d.dir_path.clone(), (d.total_size, d.total_files)))
+        .map(|d| (d.dir_path.to_string(), (d.total_size, d.total_files)))
         .collect();
 
     let mut entries = Vec::new();
@@ -152,105 +163,63 @@ fn apply_sort_order(cmp: std::cmp::Ordering, sort_order: SortOrder) -> std::cmp:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models::FileEntry;
+    use crate::db::migrate::run_full_migration;
     use crate::db::pool::create_pool;
-    use crate::db::schema::run_migrations;
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        run_full_migration(&db).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "photos/2024/img001.jpg".to_string(),
-                etag: "\"abc123\"".to_string(),
-                size: 1024,
-                last_modified: "2024-01-01T00:00:00Z".to_string(),
-                content_type: Some("image/jpeg".to_string()),
-                file_type: "jpeg".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("photos/2024/img001.jpg").bind("\"abc123\"")
+        .bind(1024i64).bind("2024-01-01T00:00:00Z").bind(Some("image/jpeg"))
+        .bind("jpeg").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "photos/2024/img002.jpg".to_string(),
-                etag: "\"def456\"".to_string(),
-                size: 2048,
-                last_modified: "2024-01-02T00:00:00Z".to_string(),
-                content_type: Some("image/jpeg".to_string()),
-                file_type: "jpeg".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("photos/2024/img002.jpg").bind("\"def456\"")
+        .bind(2048i64).bind("2024-01-02T00:00:00Z").bind(Some("image/jpeg"))
+        .bind("jpeg").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "videos/clip.mp4".to_string(),
-                etag: "\"ghi789\"".to_string(),
-                size: 50000,
-                last_modified: "2024-02-01T00:00:00Z".to_string(),
-                content_type: Some("video/mp4".to_string()),
-                file_type: "mp4".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("videos/clip.mp4").bind("\"ghi789\"")
+        .bind(50000i64).bind("2024-02-01T00:00:00Z").bind(Some("video/mp4"))
+        .bind("mp4").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "docs/notes.txt".to_string(),
-                etag: "\"jkl012\"".to_string(),
-                size: 50,
-                last_modified: "2024-03-01T00:00:00Z".to_string(),
-                content_type: None,
-                file_type: "unknown".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: true,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("docs/notes.txt").bind("\"jkl012\"")
+        .bind(50i64).bind("2024-03-01T00:00:00Z").bind(None::<String>)
+        .bind("unknown").bind("pending").bind("").bind(true)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         Ok(())
     }
 
     #[tokio::test]
     async fn test_list_directory_root() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let entries = list_directory(
-            &pool,
-            "test-host",
-            "",
-            SortField::Name,
-            SortOrder::Ascending,
-        )
-        .await?;
+        let entries =
+            list_directory(&db, "test-host", "", SortField::Name, SortOrder::Ascending).await?;
         assert_eq!(entries.len(), 2);
 
         Ok(())
@@ -258,11 +227,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_directory_photos_2024() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
         let entries = list_directory(
-            &pool,
+            &db,
             "test-host",
             "photos/2024",
             SortField::Name,
@@ -276,11 +245,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_directory_deleted_excluded() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
         let entries = list_directory(
-            &pool,
+            &db,
             "test-host",
             "docs",
             SortField::Name,

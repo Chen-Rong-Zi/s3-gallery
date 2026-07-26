@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 
-use sqlx::SqlitePool;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, Order, QueryFilter, QueryOrder};
 
-use crate::db::models::FileEntry;
+use crate::entity::file;
 use crate::error::Result;
+use crate::error::S3GalleryError;
 use crate::types::FileSize;
 
 /// A node in the directory tree.
@@ -30,8 +31,19 @@ pub struct TreeNode {
 /// # Errors
 ///
 /// Returns an error if the database query fails.
-pub async fn build_tree(db: &SqlitePool, host_id: &str, root_prefix: &str) -> Result<TreeNode> {
-    let files = FileEntry::list_by_prefix(db, host_id, root_prefix).await?;
+pub async fn build_tree(
+    db: &DatabaseConnection,
+    host_id: &str,
+    root_prefix: &str,
+) -> Result<TreeNode> {
+    let files = file::Entity::find()
+        .filter(file::Column::HostId.eq(host_id))
+        .filter(file::Column::IsDeleted.eq(false))
+        .filter(file::Column::Key.starts_with(root_prefix))
+        .order_by(file::Column::Key, Order::Asc)
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
     let effective_prefix = if root_prefix.is_empty() {
         String::new()
@@ -70,15 +82,15 @@ pub async fn build_tree(db: &SqlitePool, host_id: &str, root_prefix: &str) -> Re
     );
 
     for file in &files {
-        let key = &file.key;
-        if !key.starts_with(&effective_prefix) && !key.is_empty() {
+        let key_str = file.key.as_str();
+        if !key_str.starts_with(&effective_prefix) && !key_str.is_empty() {
             continue;
         }
 
-        let remaining = if key.starts_with(&effective_prefix) {
-            &key[effective_prefix.len()..]
+        let remaining = if key_str.starts_with(&effective_prefix) {
+            &key_str[effective_prefix.len()..]
         } else {
-            key
+            key_str
         };
 
         if remaining.is_empty() {
@@ -120,14 +132,14 @@ pub async fn build_tree(db: &SqlitePool, host_id: &str, root_prefix: &str) -> Re
             parent_path = new_path;
         }
 
-        if let Some(node) = node_map.get_mut(key) {
+        if let Some(node) = node_map.get_mut(key_str) {
             node.is_directory = false;
-            let size = u64::try_from(file.size).unwrap_or(0);
+            let size = file.size.as_u64();
             node.total_size = size;
             node.file_count = 1;
         }
 
-        let file_size = u64::try_from(file.size).unwrap_or(0);
+        let file_size = file.size.as_u64();
 
         if let Some(root_node) = node_map.get_mut(&root_path) {
             root_node.total_size += file_size;
@@ -199,81 +211,54 @@ pub async fn build_tree(db: &SqlitePool, host_id: &str, root_prefix: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models::FileEntry;
+    use crate::db::migrate::run_full_migration;
     use crate::db::pool::create_pool;
-    use crate::db::schema::run_migrations;
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        run_full_migration(&db).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "photos/2024/img001.jpg".to_string(),
-                etag: "\"abc123\"".to_string(),
-                size: 1024,
-                last_modified: "2024-01-01T00:00:00Z".to_string(),
-                content_type: Some("image/jpeg".to_string()),
-                file_type: "jpeg".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("photos/2024/img001.jpg").bind("\"abc123\"")
+        .bind(1024i64).bind("2024-01-01T00:00:00Z").bind(Some("image/jpeg"))
+        .bind("jpeg").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "photos/2024/img002.jpg".to_string(),
-                etag: "\"def456\"".to_string(),
-                size: 2048,
-                last_modified: "2024-01-02T00:00:00Z".to_string(),
-                content_type: Some("image/jpeg".to_string()),
-                file_type: "jpeg".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("photos/2024/img002.jpg").bind("\"def456\"")
+        .bind(2048i64).bind("2024-01-02T00:00:00Z").bind(Some("image/jpeg"))
+        .bind("jpeg").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "videos/clip.mp4".to_string(),
-                etag: "\"ghi789\"".to_string(),
-                size: 50000,
-                last_modified: "2024-02-01T00:00:00Z".to_string(),
-                content_type: Some("video/mp4".to_string()),
-                file_type: "mp4".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("videos/clip.mp4").bind("\"ghi789\"")
+        .bind(50000i64).bind("2024-02-01T00:00:00Z").bind(Some("video/mp4"))
+        .bind("mp4").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         Ok(())
     }
 
     #[tokio::test]
     async fn test_build_tree() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let tree = build_tree(&pool, "test-host", "").await?;
+        let tree = build_tree(&db, "test-host", "").await?;
 
         assert!(tree.is_directory);
         assert_eq!(tree.file_count, 3);
@@ -285,10 +270,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_tree_subdir() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let tree = build_tree(&pool, "test-host", "photos").await?;
+        let tree = build_tree(&db, "test-host", "photos").await?;
 
         assert!(tree.is_directory);
         assert_eq!(tree.file_count, 2);
@@ -299,9 +284,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_tree_empty() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
+        let (db, _dir) = setup_test_db().await?;
 
-        let tree = build_tree(&pool, "test-host", "").await?;
+        let tree = build_tree(&db, "test-host", "").await?;
 
         assert!(tree.is_directory);
         assert_eq!(tree.file_count, 0);

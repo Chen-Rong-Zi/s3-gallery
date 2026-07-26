@@ -9,165 +9,174 @@
 
 use std::sync::Arc;
 
-use s3_gallery_core::db::models::{
-    FileEntry, FileTagEntry, MetadataEntry, TagEntry, ThumbnailEntry,
-};
+use s3_gallery_core::db::migrate::run_full_migration;
 use s3_gallery_core::db::pool::create_pool;
-use s3_gallery_core::db::schema::run_migrations;
+use s3_gallery_core::entity::{file, file_tag, metadata, tag, thumbnail};
 use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
 use s3_gallery_core::s3::mock::MockS3Client;
-use s3_gallery_core::types::BucketName;
-use sqlx::SqlitePool;
+use s3_gallery_core::types::{
+    BucketName, Etag, FileSize, FileType, HostId, MetadataNamespace, MetadataState, ObjectKey,
+    TagType, ThumbnailFormat,
+};
+use sea_orm::ActiveValue::Set;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use tempfile::TempDir;
 
-/// Create a temporary SQLite database, run migrations, and return the pool
+/// Create a temporary SQLite database, run migrations, and return the connection
 /// along with the temp directory handle (kept alive for the lifetime of the
 /// returned `TempDir`).
-pub async fn setup_test_db() -> Result<(SqlitePool, TempDir)> {
+pub async fn setup_test_db() -> Result<(DatabaseConnection, TempDir)> {
     let dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     let db_path = dir.path().join("test.db");
-    let pool = create_pool(&db_path).await?;
-    run_migrations(&pool).await?;
-    Ok((pool, dir))
+    let db = create_pool(&db_path).await?;
+    run_full_migration(&db).await?;
+    Ok((db, dir))
 }
 
 /// Seed the database with a known set of test files.
 ///
 /// Returns the number of files inserted.
-pub async fn seed_test_files(pool: &SqlitePool) -> Result<usize> {
+pub async fn seed_test_files(db: &DatabaseConnection) -> Result<usize> {
     let files = vec![
-        FileEntry {
-            host_id: "test-host".to_string(),
-            key: "photos/vacation/img001.jpg".to_string(),
-            etag: "etag-001".to_string(),
-            size: 102400,
-            last_modified: "2026-06-01T12:00:00Z".to_string(),
-            content_type: Some("image/jpeg".to_string()),
-            file_type: "jpeg".to_string(),
-            metadata_state: "extracted".to_string(),
-            effective_date: "".to_string(),
-            is_deleted: false,
+        file::ActiveModel {
+            host_id: Set(HostId::new("test-host")?),
+            key: Set(ObjectKey::new("photos/vacation/img001.jpg")?),
+            etag: Set(Etag::new("etag-001")?),
+            size: Set(FileSize::new(102400)),
+            last_modified: Set("2026-06-01T12:00:00Z".to_string()),
+            content_type: Set(Some("image/jpeg".to_string())),
+            file_type: Set(FileType::Jpeg),
+            metadata_state: Set(MetadataState::Extracted),
+            is_deleted: Set(false),
+            effective_date: Set("".to_string()),
         },
-        FileEntry {
-            host_id: "test-host".to_string(),
-            key: "photos/vacation/img002.jpg".to_string(),
-            etag: "etag-002".to_string(),
-            size: 204800,
-            last_modified: "2026-06-02T12:00:00Z".to_string(),
-            content_type: Some("image/jpeg".to_string()),
-            file_type: "jpeg".to_string(),
-            metadata_state: "pending".to_string(),
-            effective_date: "".to_string(),
-            is_deleted: false,
+        file::ActiveModel {
+            host_id: Set(HostId::new("test-host")?),
+            key: Set(ObjectKey::new("photos/vacation/img002.jpg")?),
+            etag: Set(Etag::new("etag-002")?),
+            size: Set(FileSize::new(204800)),
+            last_modified: Set("2026-06-02T12:00:00Z".to_string()),
+            content_type: Set(Some("image/jpeg".to_string())),
+            file_type: Set(FileType::Jpeg),
+            metadata_state: Set(MetadataState::Pending),
+            is_deleted: Set(false),
+            effective_date: Set("".to_string()),
         },
-        FileEntry {
-            host_id: "test-host".to_string(),
-            key: "photos/party/clip001.mp4".to_string(),
-            etag: "etag-003".to_string(),
-            size: 5242880,
-            last_modified: "2026-06-03T12:00:00Z".to_string(),
-            content_type: Some("video/mp4".to_string()),
-            file_type: "mp4".to_string(),
-            metadata_state: "pending".to_string(),
-            effective_date: "".to_string(),
-            is_deleted: false,
+        file::ActiveModel {
+            host_id: Set(HostId::new("test-host")?),
+            key: Set(ObjectKey::new("photos/party/clip001.mp4")?),
+            etag: Set(Etag::new("etag-003")?),
+            size: Set(FileSize::new(5_242_880)),
+            last_modified: Set("2026-06-03T12:00:00Z".to_string()),
+            content_type: Set(Some("video/mp4".to_string())),
+            file_type: Set(FileType::Mp4),
+            metadata_state: Set(MetadataState::Pending),
+            is_deleted: Set(false),
+            effective_date: Set("".to_string()),
         },
-        FileEntry {
-            host_id: "test-host".to_string(),
-            key: "docs/report.pdf".to_string(),
-            etag: "etag-004".to_string(),
-            size: 307200,
-            last_modified: "2026-06-04T12:00:00Z".to_string(),
-            content_type: Some("application/pdf".to_string()),
-            file_type: "pdf".to_string(),
-            metadata_state: "pending".to_string(),
-            effective_date: "".to_string(),
-            is_deleted: false,
+        file::ActiveModel {
+            host_id: Set(HostId::new("test-host")?),
+            key: Set(ObjectKey::new("docs/report.pdf")?),
+            etag: Set(Etag::new("etag-004")?),
+            size: Set(FileSize::new(307_200)),
+            last_modified: Set("2026-06-04T12:00:00Z".to_string()),
+            content_type: Set(Some("application/pdf".to_string())),
+            file_type: Set(FileType::Pdf),
+            metadata_state: Set(MetadataState::Pending),
+            is_deleted: Set(false),
+            effective_date: Set("".to_string()),
         },
-        FileEntry {
-            host_id: "test-host".to_string(),
-            key: "docs/notes.txt".to_string(),
-            etag: "etag-005".to_string(),
-            size: 5120,
-            last_modified: "2026-06-05T12:00:00Z".to_string(),
-            content_type: Some("text/plain".to_string()),
-            file_type: "txt".to_string(),
-            metadata_state: "pending".to_string(),
-            effective_date: "".to_string(),
-            is_deleted: false,
+        file::ActiveModel {
+            host_id: Set(HostId::new("test-host")?),
+            key: Set(ObjectKey::new("docs/notes.txt")?),
+            etag: Set(Etag::new("etag-005")?),
+            size: Set(FileSize::new(5120)),
+            last_modified: Set("2026-06-05T12:00:00Z".to_string()),
+            content_type: Set(Some("text/plain".to_string())),
+            file_type: Set(FileType::Unknown),
+            metadata_state: Set(MetadataState::Pending),
+            is_deleted: Set(false),
+            effective_date: Set("".to_string()),
         },
     ];
 
     let count = files.len();
-    for file in &files {
-        FileEntry::insert(pool, file).await?;
+    for file_model in files {
+        file::Entity::insert(file_model).exec(db).await?;
     }
     Ok(count)
 }
 
 /// Seed the database with tags and file-tag associations.
-pub async fn seed_test_tags(pool: &SqlitePool) -> Result<()> {
-    let tag = TagEntry {
-        tag_id: 0,
-        tag_name: "vacation".to_string(),
-        tag_type: "manual".to_string(),
+pub async fn seed_test_tags(db: &DatabaseConnection) -> Result<()> {
+    let tag_active = tag::ActiveModel {
+        tag_name: Set("vacation".to_string()),
+        tag_type: Set(TagType::Manual),
+        ..Default::default()
     };
-    TagEntry::insert(pool, &tag).await?;
-    let tag = TagEntry::get_by_name(pool, "vacation").await?;
+    tag::Entity::insert(tag_active).exec(db).await?;
 
-    let ft = FileTagEntry {
-        file_key: "photos/vacation/img001.jpg".to_string(),
-        tag_id: tag.tag_id,
-    };
-    FileTagEntry::insert(pool, &ft).await?;
+    let tag = tag::Entity::find()
+        .filter(tag::Column::TagName.eq("vacation"))
+        .one(db)
+        .await?
+        .ok_or_else(|| S3GalleryError::NotFound("tag 'vacation'".into()))?;
 
-    let ft = FileTagEntry {
-        file_key: "photos/vacation/img002.jpg".to_string(),
-        tag_id: tag.tag_id,
+    let ft = file_tag::ActiveModel {
+        file_key: Set(ObjectKey::new("photos/vacation/img001.jpg")?),
+        tag_id: Set(tag.tag_id),
     };
-    FileTagEntry::insert(pool, &ft).await?;
+    file_tag::Entity::insert(ft).exec(db).await?;
+
+    let ft = file_tag::ActiveModel {
+        file_key: Set(ObjectKey::new("photos/vacation/img002.jpg")?),
+        tag_id: Set(tag.tag_id),
+    };
+    file_tag::Entity::insert(ft).exec(db).await?;
 
     Ok(())
 }
 
 /// Seed the database with metadata entries.
-pub async fn seed_test_metadata(pool: &SqlitePool) -> Result<()> {
-    let meta = MetadataEntry {
-        file_key: "photos/vacation/img001.jpg".to_string(),
-        namespace: "exif".to_string(),
-        key: "Make".to_string(),
-        value: "Canon".to_string(),
-        extracted_at: "2026-06-01T12:00:00Z".to_string(),
-        partial: false,
+pub async fn seed_test_metadata(db: &DatabaseConnection) -> Result<()> {
+    let meta = metadata::ActiveModel {
+        file_key: Set(ObjectKey::new("photos/vacation/img001.jpg")?),
+        namespace: Set(MetadataNamespace::Exif),
+        namespace_custom: Set(None),
+        key: Set("Make".to_string()),
+        value: Set("Canon".to_string()),
+        extracted_at: Set("2026-06-01T12:00:00Z".to_string()),
+        partial: Set(false),
     };
-    MetadataEntry::insert(pool, &meta).await?;
+    metadata::Entity::insert(meta).exec(db).await?;
 
-    let meta = MetadataEntry {
-        file_key: "photos/vacation/img001.jpg".to_string(),
-        namespace: "exif".to_string(),
-        key: "Model".to_string(),
-        value: "EOS R5".to_string(),
-        extracted_at: "2026-06-01T12:00:00Z".to_string(),
-        partial: false,
+    let meta = metadata::ActiveModel {
+        file_key: Set(ObjectKey::new("photos/vacation/img001.jpg")?),
+        namespace: Set(MetadataNamespace::Exif),
+        namespace_custom: Set(None),
+        key: Set("Model".to_string()),
+        value: Set("EOS R5".to_string()),
+        extracted_at: Set("2026-06-01T12:00:00Z".to_string()),
+        partial: Set(false),
     };
-    MetadataEntry::insert(pool, &meta).await?;
+    metadata::Entity::insert(meta).exec(db).await?;
 
     Ok(())
 }
 
 /// Seed the database with a thumbnail entry.
-pub async fn seed_test_thumbnail(pool: &SqlitePool) -> Result<()> {
-    let thumb = ThumbnailEntry {
-        file_key: "photos/vacation/img001.jpg".to_string(),
-        data: vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10],
-        format: "jpeg".to_string(),
-        width: Some(150),
-        height: Some(150),
-        cached_at: "2026-06-01T12:00:00Z".to_string(),
+pub async fn seed_test_thumbnail(db: &DatabaseConnection) -> Result<()> {
+    let thumb = thumbnail::ActiveModel {
+        file_key: Set(ObjectKey::new("photos/vacation/img001.jpg")?),
+        data: Set(vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]),
+        format: Set(ThumbnailFormat::Jpeg),
+        width: Set(Some(150)),
+        height: Set(Some(150)),
+        cached_at: Set("2026-06-01T12:00:00Z".to_string()),
     };
-    ThumbnailEntry::insert(pool, &thumb).await?;
+    thumbnail::Entity::insert(thumb).exec(db).await?;
     Ok(())
 }
 

@@ -1,8 +1,8 @@
+use crate::web::handlers::{render_template, HandlerResult};
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
 };
-use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::view::timeline_gallery;
 use serde::Deserialize;
 use serde_json::json;
@@ -77,10 +77,8 @@ pub async fn gallery(
 
     tracing::info!(handler = "gallery", page = %page, tag = ?tag, "serving gallery");
 
-    let pool = &state.db;
-
     let (entries, has_more) = match timeline_gallery::get_timeline_gallery(
-        pool,
+        &state.db,
         params.host_id.as_deref(),
         page,
         GROUPS_PER_PAGE,
@@ -105,14 +103,14 @@ pub async fn gallery(
                 .files
                 .iter()
                 .map(|f| {
-                    let name = file_name_from_key(&f.key);
+                    let name = file_name_from_key(f.key.as_str());
                     GalleryItem {
-                        key: f.key.clone(),
+                        key: f.key.to_string(),
                         name,
                         thumbnail_url: format!("/thumbnails/{}", f.key),
-                        host_id: f.host_id.clone(),
-                        file_type: f.file_type.clone(),
-                        size: f.size,
+                        host_id: f.host_id.to_string(),
+                        file_type: f.file_type.to_string(),
+                        size: f.size.as_u64() as i64,
                         last_modified: f.last_modified.clone(),
                     }
                 })
@@ -127,7 +125,7 @@ pub async fn gallery(
 
     // Fetch all tags for the filter dropdown
     let all_tags: Vec<serde_json::Value> =
-        match s3_gallery_core::view::tags::list_tags(pool, params.host_id.as_deref()).await {
+        match s3_gallery_core::view::tags::list_tags(&state.db, params.host_id.as_deref()).await {
             Ok(tags) => tags
                 .iter()
                 .map(|t| json!({ "name": t.tag_name, "type": t.tag_type }))

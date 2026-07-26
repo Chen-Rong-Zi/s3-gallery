@@ -1,9 +1,9 @@
 mod cli;
 mod cmd_db;
 mod cmd_init;
-mod cmd_traffic;
 mod cmd_scan;
 mod cmd_serve;
+mod cmd_traffic;
 mod cmd_view;
 mod web;
 
@@ -127,25 +127,32 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Traffic(traffic_cmd) => {
-            match traffic_cmd {
-                TrafficCommands::Summary { host, period, since, until } => {
-                    if let Err(e) = cmd_traffic::run_traffic_summary(
-                        &cli, host.clone(), period.clone(), since.clone(), until.clone(),
-                    )
-                    .await
-                    {
-                        eprintln!("Error: {}", e);
-                        std::process::exit(1);
-                    }
-                }
-                TrafficCommands::Live { interval } => {
-                    if let Err(e) = cmd_traffic::run_traffic_live(&cli, *interval).await {
-                        eprintln!("Error: {}", e);
-                        std::process::exit(1);
-                    }
+        Commands::Traffic(traffic_cmd) => match traffic_cmd {
+            TrafficCommands::Summary {
+                host,
+                period,
+                since,
+                until,
+            } => {
+                if let Err(e) = cmd_traffic::run_traffic_summary(
+                    &cli,
+                    host.clone(),
+                    period.clone(),
+                    since.clone(),
+                    until.clone(),
+                )
+                .await
+                {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
                 }
             }
-        }
+            TrafficCommands::Live { interval } => {
+                if let Err(e) = cmd_traffic::run_traffic_live(&cli, *interval).await {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        },
     }
 }

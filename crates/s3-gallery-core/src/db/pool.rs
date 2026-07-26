@@ -1,30 +1,20 @@
 use std::path::Path;
 
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sea_orm::{Database, DatabaseConnection};
 
-use crate::error::Result;
-use crate::error::S3GalleryError;
+use crate::error::{Result, S3GalleryError};
 
-/// Create a new SQLite connection pool.
+/// Create a new SQLite database connection.
 ///
-/// The database file will be created if it does not exist. WAL journal mode and
-/// foreign key enforcement are enabled at the connection level.
+/// The database file will be created if it does not exist (`mode=rwc`).
 ///
 /// # Errors
 ///
-/// Returns `S3GalleryError::DbError` if the pool cannot be created
+/// Returns `S3GalleryError::DbError` if the connection cannot be established
 /// (e.g. invalid path, permissions, or sqlite incompatibility).
-pub async fn create_pool(db_path: &Path) -> Result<SqlitePool> {
-    let opts = SqliteConnectOptions::new()
-        .filename(db_path)
-        .create_if_missing(true)
-        .foreign_keys(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
-
-    SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect_with(opts)
+pub async fn create_pool(path: &Path) -> Result<DatabaseConnection> {
+    let url = format!("sqlite:{}?mode=rwc", path.display());
+    Database::connect(&url)
         .await
-        .map_err(|e| S3GalleryError::DbError(format!("Failed to create pool: {e}")))
+        .map_err(|e| S3GalleryError::DbError(format!("Failed to connect to database: {e}")))
 }

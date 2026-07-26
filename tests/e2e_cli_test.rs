@@ -11,17 +11,18 @@
 
 use std::sync::Arc;
 
+use s3_gallery_core::db::migrate::run_full_migration;
 use s3_gallery_core::db::pool::create_pool;
-use s3_gallery_core::db::schema::run_migrations;
 use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
 use s3_gallery_core::s3::real::RealS3Client;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::scan::scanner::{run_scan, ScanConfig};
-use s3_gallery_core::types::{BucketName, ObjectKey, SortField, SortOrder};
+use s3_gallery_core::entity::file;
+use s3_gallery_core::types::{BucketName, HostId, ObjectKey, Prefix, SortField, SortOrder};
 use s3_gallery_core::view::LocalView;
-use sqlx::SqlitePool;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -32,12 +33,12 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-async fn setup_e2e_db() -> Result<(SqlitePool, TempDir)> {
+async fn setup_e2e_db() -> Result<(DatabaseConnection, TempDir)> {
     let dir = tempfile::tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
     let db_path = dir.path().join("e2e-cli-test.db");
-    let pool = create_pool(&db_path).await?;
-    run_migrations(&pool).await?;
-    Ok((pool, dir))
+    let db = create_pool(&db_path).await?;
+    run_full_migration(&db).await?;
+    Ok((db, dir))
 }
 
 async fn ensure_bucket(client: &aws_sdk_s3::Client, bucket_name: &str) -> Result<()> {
@@ -85,7 +86,7 @@ fn make_s3_client() -> Result<(Arc<dyn S3Client>, BucketName, aws_sdk_s3::Client
 async fn setup_scan_fixture(
     s3: &Arc<dyn S3Client>,
     bucket: &BucketName,
-    pool: &SqlitePool,
+    db: &DatabaseConnection,
     prefix: &str,
     host_id: &str,
 ) -> Result<()> {
@@ -122,19 +123,21 @@ async fn setup_scan_fixture(
         s3.put_object(bucket, &object_key, data).await?;
     }
 
+    let sqlite_pool = db.get_sqlite_connection_pool().clone();
     let scan_config = ScanConfig {
         host_id: host_id.to_string(),
         s3: S3Service::new(s3.clone()),
-        db: pool.clone(),
+        db: sqlite_pool,
+        sea_db: db.clone(),
         bucket: bucket.clone(),
-        prefix: ObjectKey::new(prefix)?,
+        prefix: Prefix::new(prefix)?,
         concurrency: 4,
         extract_metadata: false,
         generate_thumbnails: false,
         client_id: "e2e-cli-test".to_string(),
     };
 
-    let result = run_scan(scan_config).await?;
+    let result = run_scan(scan_config, String::new()).await?;
     assert_eq!(result.total_files, 4, "should find all 4 test files");
     assert_eq!(result.new_files, 4);
 
@@ -142,7 +145,7 @@ async fn setup_scan_fixture(
 }
 
 async fn cleanup_prefix(s3: &Arc<dyn S3Client>, bucket: &BucketName, prefix: &str) -> Result<()> {
-    let prefix_key = ObjectKey::new(prefix)?;
+    let prefix_key = Prefix::new(prefix)?;
     let objects = s3.list_objects(bucket, &prefix_key).await?;
     for obj in &objects {
         s3.delete_object(bucket, &obj.key).await?;
@@ -160,13 +163,13 @@ async fn e2e_view_tree() -> Result<()> {
     let (s3, bucket, aws_client) = make_s3_client()?;
     ensure_bucket(&aws_client, bucket.as_str()).await?;
 
-    let (pool, _dir) = setup_e2e_db().await?;
+    let (db, _dir) = setup_e2e_db().await?;
     let prefix = format!("e2e-cli-tree-{}", uuid::Uuid::new_v4());
     let host_id = "e2e-tree-host".to_string();
 
-    setup_scan_fixture(&s3, &bucket, &pool, &prefix, &host_id).await?;
+    setup_scan_fixture(&s3, &bucket, &db, &prefix, &host_id).await?;
 
-    let view = LocalView::new(pool.clone());
+    let view = LocalView::new(db);
     let tree = view.build_tree(&host_id, "").await?;
 
     // Verify tree structure: root should have children
@@ -202,13 +205,13 @@ async fn e2e_view_ls() -> Result<()> {
     let (s3, bucket, aws_client) = make_s3_client()?;
     ensure_bucket(&aws_client, bucket.as_str()).await?;
 
-    let (pool, _dir) = setup_e2e_db().await?;
+    let (db, _dir) = setup_e2e_db().await?;
     let prefix = format!("e2e-cli-ls-{}", uuid::Uuid::new_v4());
     let host_id = "e2e-ls-host".to_string();
 
-    setup_scan_fixture(&s3, &bucket, &pool, &prefix, &host_id).await?;
+    setup_scan_fixture(&s3, &bucket, &db, &prefix, &host_id).await?;
 
-    let view = LocalView::new(pool.clone());
+    let view = LocalView::new(db);
 
     // List files in the photos/2024 subdirectory
     let photos_2024_prefix = format!("{prefix}/photos/2024");
@@ -253,13 +256,13 @@ async fn e2e_view_stat() -> Result<()> {
     let (s3, bucket, aws_client) = make_s3_client()?;
     ensure_bucket(&aws_client, bucket.as_str()).await?;
 
-    let (pool, _dir) = setup_e2e_db().await?;
+    let (db, _dir) = setup_e2e_db().await?;
     let prefix = format!("e2e-cli-stat-{}", uuid::Uuid::new_v4());
     let host_id = "e2e-stat-host".to_string();
 
-    setup_scan_fixture(&s3, &bucket, &pool, &prefix, &host_id).await?;
+    setup_scan_fixture(&s3, &bucket, &db, &prefix, &host_id).await?;
 
-    let view = LocalView::new(pool.clone());
+    let view = LocalView::new(db);
     let stats = view.get_stats(&host_id).await?;
 
     assert_eq!(stats.total_files, 4, "should have 4 files total");
@@ -288,13 +291,13 @@ async fn e2e_view_search() -> Result<()> {
     let (s3, bucket, aws_client) = make_s3_client()?;
     ensure_bucket(&aws_client, bucket.as_str()).await?;
 
-    let (pool, _dir) = setup_e2e_db().await?;
+    let (db, _dir) = setup_e2e_db().await?;
     let prefix = format!("e2e-cli-search-{}", uuid::Uuid::new_v4());
     let host_id = "e2e-search-host".to_string();
 
-    setup_scan_fixture(&s3, &bucket, &pool, &prefix, &host_id).await?;
+    setup_scan_fixture(&s3, &bucket, &db, &prefix, &host_id).await?;
 
-    let view = LocalView::new(pool.clone());
+    let view = LocalView::new(db);
 
     // Search by name — should find vacation.jpg
     let result = view.search_by_name(&host_id, "vacation").await?;
@@ -303,7 +306,7 @@ async fn e2e_view_search() -> Result<()> {
         "should find 1 file matching 'vacation'"
     );
     assert!(
-        result.files[0].key.contains("vacation.jpg"),
+        result.files[0].key.as_str().contains("vacation.jpg"),
         "should match vacation.jpg"
     );
 
@@ -324,15 +327,15 @@ async fn e2e_view_duplicates() -> Result<()> {
     let (s3, bucket, aws_client) = make_s3_client()?;
     ensure_bucket(&aws_client, bucket.as_str()).await?;
 
-    let (pool, _dir) = setup_e2e_db().await?;
+    let (db, _dir) = setup_e2e_db().await?;
     let prefix = format!("e2e-cli-dup-{}", uuid::Uuid::new_v4());
     let host_id = "e2e-dup-host".to_string();
 
     // The two JPEG files in setup_scan_fixture have identical content,
     // so they should be detected as duplicates
-    setup_scan_fixture(&s3, &bucket, &pool, &prefix, &host_id).await?;
+    setup_scan_fixture(&s3, &bucket, &db, &prefix, &host_id).await?;
 
-    let view = LocalView::new(pool.clone());
+    let view = LocalView::new(db);
     let groups = view.find_duplicates(&host_id).await?;
 
     // The two JPEG files have identical content, so should be detected as duplicates
@@ -352,13 +355,13 @@ async fn e2e_view_timeline() -> Result<()> {
     let (s3, bucket, aws_client) = make_s3_client()?;
     ensure_bucket(&aws_client, bucket.as_str()).await?;
 
-    let (pool, _dir) = setup_e2e_db().await?;
+    let (db, _dir) = setup_e2e_db().await?;
     let prefix = format!("e2e-cli-time-{}", uuid::Uuid::new_v4());
     let host_id = "e2e-time-host".to_string();
 
-    setup_scan_fixture(&s3, &bucket, &pool, &prefix, &host_id).await?;
+    setup_scan_fixture(&s3, &bucket, &db, &prefix, &host_id).await?;
 
-    let view = LocalView::new(pool.clone());
+    let view = LocalView::new(db);
     let timeline = view.get_timeline(&host_id).await?;
 
     // Timeline should have at least one entry (the scan date)
@@ -393,16 +396,16 @@ async fn e2e_db_push_pull() -> Result<()> {
     let (s3, bucket, aws_client) = make_s3_client()?;
     ensure_bucket(&aws_client, bucket.as_str()).await?;
 
-    let (pool, _dir) = setup_e2e_db().await?;
+    let (db, _dir) = setup_e2e_db().await?;
     let prefix = format!("e2e-cli-dbpush-{}", uuid::Uuid::new_v4());
     let host_id = "e2e-dbpush-host".to_string();
 
-    setup_scan_fixture(&s3, &bucket, &pool, &prefix, &host_id).await?;
+    setup_scan_fixture(&s3, &bucket, &db, &prefix, &host_id).await?;
 
     // Push DB to remote (simulate db push)
     // Force a WAL checkpoint so the main DB file contains all committed data.
     sqlx::query("PRAGMA wal_checkpoint(FULL)")
-        .execute(&pool)
+        .execute(db.get_sqlite_connection_pool())
         .await
         .map_err(|e| S3GalleryError::DbError(format!("Failed to checkpoint: {e}")))?;
     let db_path = _dir.path().join("e2e-cli-test.db");
@@ -426,12 +429,17 @@ async fn e2e_db_push_pull() -> Result<()> {
     std::fs::write(&pulled_db_path, &pulled_data).map_err(S3GalleryError::IoError)?;
     // The pulled DB already has the schema and data from the original DB,
     // so we just open it directly without running migrations again.
-    let pulled_pool = create_pool(&pulled_db_path).await?;
+    let pulled_db = create_pool(&pulled_db_path).await?;
 
     // Verify both DBs have the same file count
-    let files = s3_gallery_core::db::models::FileEntry::count(&pool, &host_id).await?;
-    let pulled_files =
-        s3_gallery_core::db::models::FileEntry::count(&pulled_pool, &host_id).await?;
+    let files = file::Entity::find()
+        .filter(file::Column::HostId.eq(HostId::new(&host_id)?))
+        .count(&db)
+        .await?;
+    let pulled_files = file::Entity::find()
+        .filter(file::Column::HostId.eq(HostId::new(&host_id)?))
+        .count(&pulled_db)
+        .await?;
     assert_eq!(pulled_files, files, "pulled DB should have same file count");
 
     // Cleanup

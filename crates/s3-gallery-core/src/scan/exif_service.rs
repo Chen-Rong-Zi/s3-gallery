@@ -9,7 +9,6 @@ use std::task::{Context, Poll};
 use chrono::Utc;
 use tower::Service;
 
-use crate::db::models::MetadataEntry;
 use crate::error::{Result, S3GalleryError};
 use crate::extractor::exif::ExifExtractor;
 use crate::extractor::registry::ExtractorRegistry;
@@ -100,18 +99,22 @@ impl Service<ExifRequest> for ExifService {
                 return Ok(ExifResult::None);
             }
 
-            // 4. 存储 MetadataEntry
+            // 4. 存储元数据
             let now = Utc::now().to_rfc3339();
             for item in &items {
-                MetadataEntry::insert(&db, &MetadataEntry {
-                    file_key: req.key.as_str().to_string(),
-                    namespace: item.namespace.to_string(),
-                    key: item.key.clone(),
-                    value: item.value.clone(),
-                    extracted_at: now.clone(),
-                    partial: false,
-                })
-                .await?;
+                sqlx::query(
+                    "INSERT OR REPLACE INTO metadata (file_key, namespace, key, value, extracted_at, partial) \
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(req.key.as_str())
+                .bind(item.namespace)
+                .bind(&item.key)
+                .bind(&item.value)
+                .bind(&now)
+                .bind(false)
+                .execute(&db)
+                .await
+                .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
             }
 
             // 5. 计算 effective_date

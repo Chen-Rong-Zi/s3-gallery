@@ -1,8 +1,8 @@
+use crate::web::handlers::{render_template, HandlerResult};
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
 };
-use crate::web::handlers::{HandlerResult, render_template};
 use s3_gallery_core::types::{FileSize, SortField, SortOrder};
 use s3_gallery_core::view::ls;
 use serde::Deserialize;
@@ -134,16 +134,15 @@ pub async fn browse(
 
     tracing::info!(handler = "browse", path = %path, sort_by = %sort_field, sort_order = %sort_order, "listing directory");
 
-    let pool = &state.db;
-
     // If path is empty, show root-level host directories
     if path.is_empty() {
+        let sqlite_pool = state.db.get_sqlite_connection_pool();
         // Fetch per-host totals from files table
         let host_totals: Vec<(String, i64, i64)> = sqlx::query_as(
             "SELECT host_id, COUNT(*) as total_files, COALESCE(SUM(size), 0) as total_size \
              FROM files WHERE is_deleted = 0 GROUP BY host_id ORDER BY host_id",
         )
-        .fetch_all(pool)
+        .fetch_all(sqlite_pool)
         .await
         .unwrap_or_default();
         let total_map: std::collections::HashMap<String, (i64, i64)> = host_totals
@@ -155,15 +154,15 @@ pub async fn browse(
             .hosts
             .iter()
             .map(|h| {
-                let (size, count) = total_map.get(&h.host_id).copied().unwrap_or((0, 0));
+                let (size, count) = total_map.get(h.host_id.as_str()).copied().unwrap_or((0, 0));
                 let size_str = if size > 0 {
                     FileSize::new(size as u64).to_string()
                 } else {
                     "-".to_string()
                 };
                 EntryView {
-                    name: h.host_id.clone(),
-                    path: h.host_id.clone(),
+                    name: h.host_id.to_string(),
+                    path: h.host_id.to_string(),
                     size: size_str,
                     file_count: count as u64,
                     file_type: "directory".to_string(),
@@ -197,16 +196,16 @@ pub async fn browse(
     // Validate host_id is known
     if state.get_host(host_id).is_none() {
         return HandlerResult::Error(
-                StatusCode::NOT_FOUND,
-                json!({
-                    "error": "host not found",
-                    "detail": format!("No host: {host_id}")
-                }),
-            );
+            StatusCode::NOT_FOUND,
+            json!({
+                "error": "host not found",
+                "detail": format!("No host: {host_id}")
+            }),
+        );
     }
 
     // Fetch directory listing using ls module directly
-    let entries = match ls::list_directory(pool, host_id, path, sort_field, sort_order).await {
+    let entries = match ls::list_directory(&state.db, host_id, path, sort_field, sort_order).await {
         Ok(entries) => entries,
         Err(e) => {
             tracing::error!(handler = "browse", path = %path, sort_by = %sort_field, error = %e, "failed to list directory");

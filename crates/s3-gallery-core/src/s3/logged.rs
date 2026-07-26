@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use tracing::{debug, info, warn};
 
 use crate::error::Result;
-use crate::types::{BucketName, ObjectKey};
+use crate::types::{BucketName, ObjectKey, Prefix};
 
 use super::client::{ObjectMetadata, ObjectSummary, S3Client};
 
@@ -50,7 +50,7 @@ impl S3Client for LoggedS3Client {
     async fn list_objects(
         &self,
         bucket: &BucketName,
-        prefix: &ObjectKey,
+        prefix: &Prefix,
     ) -> Result<Vec<ObjectSummary>> {
         let start = Instant::now();
         let result = self.inner.list_objects(bucket, prefix).await;
@@ -338,7 +338,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::error::S3GalleryError;
-    use crate::types::{BucketName, ObjectKey};
+    use crate::types::{BucketName, ObjectKey, Prefix};
 
     use super::super::mock::MockS3Client;
     use super::*;
@@ -364,7 +364,7 @@ mod tests {
         ])?;
         let logged = LoggedS3Client::new(Arc::new(mock));
         let bucket = BucketName::new("test-bucket")?;
-        let prefix = ObjectKey::new("photos/")?;
+        let prefix = Prefix::new("photos/")?;
 
         let results = logged.list_objects(&bucket, &prefix).await?;
         assert_eq!(results.len(), 2);

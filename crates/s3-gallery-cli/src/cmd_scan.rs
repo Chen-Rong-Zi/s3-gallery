@@ -1,26 +1,27 @@
 use std::sync::Arc;
 
+use sea_orm::DatabaseConnection;
+use sqlx::SqlitePool;
 use tower::Service;
 use tower::ServiceBuilder;
 
 use crate::cli::Cli;
+use s3_gallery_core::db::migrate::run_full_migration;
 use s3_gallery_core::db::pool::create_pool;
-use s3_gallery_core::db::schema::run_migrations;
 use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
 use s3_gallery_core::s3::layers::{LogLayer, TrafficLayer};
 use s3_gallery_core::s3::real::RealS3Client;
 use s3_gallery_core::s3::s3_service::S3Service;
-use s3_gallery_core::s3::traffic_persist::spawn_aggregator;
+use s3_gallery_core::s3::traffic_persist::spawn_batch_writer;
 use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
 use s3_gallery_core::scan::aggregate::AggregateLayer;
 use s3_gallery_core::scan::diff_layer::DiffLayer;
 use s3_gallery_core::scan::discover::DiscoverLayer;
 use s3_gallery_core::scan::pipeline::ScanRequest;
 use s3_gallery_core::scan::process::ProcessLayer;
-use s3_gallery_core::types::{BucketName, ObjectKey};
-use sqlx::SqlitePool;
+use s3_gallery_core::types::{BucketName, ObjectKey, Prefix};
 
 /// Parse bucket from CLI, create S3 client, and return bucket info.
 async fn setup_scan_common(cli: &Cli) -> Result<(BucketName, Arc<dyn S3Client>, String)> {
@@ -46,15 +47,15 @@ async fn setup_scan_common(cli: &Cli) -> Result<(BucketName, Arc<dyn S3Client>, 
     Ok((bucket, s3, bucket_str.to_string()))
 }
 
-/// Create/connect to local DB, run migrations, return pool.
-async fn setup_db_pool(cli: &Cli) -> Result<SqlitePool> {
+/// Create/connect to local DB, run migrations, return connection.
+async fn setup_db_pool(cli: &Cli) -> Result<DatabaseConnection> {
     let db_path = &cli.db_path;
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let pool = create_pool(db_path).await?;
-    run_migrations(&pool).await?;
-    Ok(pool)
+    let db = create_pool(db_path).await?;
+    run_full_migration(&db).await?;
+    Ok(db)
 }
 
 pub async fn run_init(
@@ -78,9 +79,17 @@ pub async fn run_init(
     }
 
     let (bucket, s3, _bucket_str) = setup_scan_common(cli).await?;
-    let pool = setup_db_pool(cli).await?;
+    let db = setup_db_pool(cli).await?;
 
-    run_scan_core(s3.clone(), &pool, &bucket, &prefix.unwrap_or_default(), &opts, cli).await
+    run_scan_core(
+        s3.clone(),
+        &db,
+        &bucket,
+        &prefix.unwrap_or_default(),
+        &opts,
+        cli,
+    )
+    .await
 }
 
 pub async fn run_update(cli: &Cli, prefix: Option<String>, opts: ScanOptions) -> Result<()> {
@@ -93,9 +102,17 @@ pub async fn run_update(cli: &Cli, prefix: Option<String>, opts: ScanOptions) ->
     }
 
     let (bucket, s3, _bucket_str) = setup_scan_common(cli).await?;
-    let pool = setup_db_pool(cli).await?;
+    let db = setup_db_pool(cli).await?;
 
-    run_scan_core(s3.clone(), &pool, &bucket, &prefix.unwrap_or_default(), &opts, cli).await
+    run_scan_core(
+        s3.clone(),
+        &db,
+        &bucket,
+        &prefix.unwrap_or_default(),
+        &opts,
+        cli,
+    )
+    .await
 }
 
 pub async fn run_sync(cli: &Cli, prefix: Option<String>, opts: ScanOptions) -> Result<()> {
@@ -117,20 +134,20 @@ pub async fn run_sync(cli: &Cli, prefix: Option<String>, opts: ScanOptions) -> R
         }
         Err(S3GalleryError::ObjectNotFound(_)) | Err(S3GalleryError::NotFound(_)) => {
             tracing::info!("no remote DB found, falling back to fresh scan");
-            let pool = setup_db_pool(cli).await?;
-            return run_scan_core(s3.clone(), &pool, &bucket, &scope_prefix, &opts, cli).await;
+            let db = setup_db_pool(cli).await?;
+            return run_scan_core(s3.clone(), &db, &bucket, &scope_prefix, &opts, cli).await;
         }
         Err(e) => return Err(e),
     }
 
-    let pool = setup_db_pool(cli).await?;
-    run_scan_core(s3.clone(), &pool, &bucket, &scope_prefix, &opts, cli).await
+    let db = setup_db_pool(cli).await?;
+    run_scan_core(s3.clone(), &db, &bucket, &scope_prefix, &opts, cli).await
 }
 
 /// Core scan logic: use the pipeline to discover hosts, diff, process, and generate report.
 async fn run_scan_core(
     s3: Arc<dyn S3Client>,
-    pool: &SqlitePool,
+    db: &DatabaseConnection,
     bucket: &BucketName,
     scope_prefix: &str,
     opts: &ScanOptions,
@@ -138,15 +155,25 @@ async fn run_scan_core(
 ) -> Result<()> {
     let db_path = &cli.db_path;
 
-    // Set up traffic tracking
-    let recorder = Arc::new(TrafficRecorder::new(pool.clone()));
-    let _agg_handle = spawn_aggregator(recorder.clone(), pool.clone(), 60);
+    // Set up traffic tracking with channel-based batch writer
+    // spawn_batch_writer needs a raw SqlitePool, so create one separately
+    let sqlite_pool = SqlitePool::connect(&format!("sqlite:{}?mode=rwc", db_path.display()))
+        .await
+        .map_err(|e| {
+            S3GalleryError::DbError(format!("Failed to create pool for batch writer: {e}"))
+        })?;
+    let handle = spawn_batch_writer(sqlite_pool, 5, 100);
+    let recorder = Arc::new(TrafficRecorder::new(handle.sender.clone()));
 
     // Build discover_s3 with LogLayer + TrafficLayer for "scan_discover"
     let discover_core = S3Service::new(s3.clone());
     let discover_s3 = ServiceBuilder::new()
         .layer(LogLayer)
-        .layer(TrafficLayer::new(recorder.clone(), "discover", "scan_discover"))
+        .layer(TrafficLayer::new(
+            recorder.clone(),
+            "discover",
+            "scan_discover",
+        ))
         .service(discover_core);
 
     // Build exif_s3 with LogLayer + TrafficLayer for "scan_exif"
@@ -160,18 +187,25 @@ async fn run_scan_core(
     // ServiceBuilder applies layers from outside-in, so the LAST layer is the outermost wrapper.
     // We want: AggregateLayer(ProcessLayer(DiffLayer(DiscoverLayer(discover_s3))))
     // So: ServiceBuilder::new().layer(Aggregate).layer(Process).layer(Diff).layer(Discover).service(discover_s3)
-    let scope_prefix_key = ObjectKey::new(scope_prefix.to_string())
+    let scope_prefix_key = Prefix::new(scope_prefix.to_string())
         .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
+    let sqlite_pool = db.get_sqlite_connection_pool();
+
     let mut pipeline = ServiceBuilder::new()
-        .layer(AggregateLayer::new(pool.clone(), recorder.counters.clone()))
-        .layer(ProcessLayer::new(pool.clone(), exif_s3, opts.concurrency))
-        .layer(DiffLayer::new(pool.clone()))
-        .layer(DiscoverLayer::new(pool.clone()))
+        .layer(AggregateLayer::new(db.clone(), Some(handle)))
+        .layer(ProcessLayer::new(
+            sqlite_pool.clone(),
+            exif_s3,
+            opts.concurrency,
+        ))
+        .layer(DiffLayer::new(sqlite_pool.clone(), db.clone()))
+        .layer(DiscoverLayer::new(sqlite_pool.clone(), db.clone()))
         .service(discover_s3);
 
     let resp = pipeline
         .call(ScanRequest {
+            endpoint: cli.endpoint.clone(),
             bucket: bucket.clone(),
             scope_prefix: scope_prefix_key,
             concurrency: opts.concurrency,

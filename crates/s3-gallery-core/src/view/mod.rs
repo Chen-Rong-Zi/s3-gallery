@@ -15,25 +15,24 @@ pub mod timeline_gallery;
 pub mod traffic;
 pub mod tree;
 
-
-use sqlx::SqlitePool;
+use sea_orm::DatabaseConnection;
 
 /// Local view - pure database queries, no S3 operations.
 ///
 /// The absence of an S3Client field is a compiler-enforced guarantee
 /// that no S3 I/O can be performed through this struct.
 pub struct LocalView {
-    db: SqlitePool,
+    db: DatabaseConnection,
 }
 
 impl LocalView {
-    /// Create a new LocalView from a database connection pool.
-    pub fn new(db: SqlitePool) -> Self {
+    /// Create a new LocalView from a database connection.
+    pub fn new(db: DatabaseConnection) -> Self {
         Self { db }
     }
 
-    /// Get a reference to the database connection pool.
-    pub fn db(&self) -> &SqlitePool {
+    /// Get a reference to the database connection.
+    pub fn db(&self) -> &DatabaseConnection {
         &self.db
     }
 
@@ -107,7 +106,7 @@ impl LocalView {
     pub async fn list_tags(
         &self,
         host_id: &str,
-    ) -> crate::error::Result<Vec<crate::db::models::TagEntry>> {
+    ) -> crate::error::Result<Vec<crate::entity::tag::Model>> {
         tags::list_tags(&self.db, Some(host_id)).await
     }
 
@@ -120,7 +119,7 @@ impl LocalView {
         &self,
         host_id: &str,
         tag_name: &str,
-    ) -> crate::error::Result<Vec<crate::db::models::FileEntry>> {
+    ) -> crate::error::Result<Vec<crate::entity::file::Model>> {
         tags::get_files_by_tag(&self.db, Some(host_id), tag_name).await
     }
 

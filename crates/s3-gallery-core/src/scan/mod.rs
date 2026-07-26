@@ -5,7 +5,7 @@ pub mod diff_layer;
 pub mod discover;
 pub mod exif_service;
 pub mod pipeline;
-pub mod tag_service;
 pub mod process;
 pub mod scan_objects;
 pub mod scanner;
+pub mod tag_service;

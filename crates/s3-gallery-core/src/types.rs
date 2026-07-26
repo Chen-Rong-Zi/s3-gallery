@@ -1,9 +1,106 @@
 use std::fmt;
 use std::str::FromStr;
 
+use sea_orm::DeriveActiveEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, S3GalleryError};
+
+/// Bridge Newtypes to SeaORM's TryGetable, Value, ValueType, Nullable, and TryFromU64 traits.
+macro_rules! impl_sea_orm_value_for_newtype {
+    ($ty:ty) => {
+        impl sea_orm::TryGetable for $ty {
+            fn try_get_by<I: sea_orm::ColIdx>(
+                res: &sea_orm::QueryResult,
+                idx: I,
+            ) -> std::result::Result<Self, sea_orm::TryGetError> {
+                let s: String = res.try_get_by::<String, I>(idx)?;
+                s.parse::<$ty>().map_err(|e: crate::error::S3GalleryError| {
+                    sea_orm::TryGetError::DbErr(sea_orm::DbErr::Custom(e.to_string()))
+                })
+            }
+        }
+        impl From<$ty> for sea_orm::Value {
+            fn from(v: $ty) -> Self {
+                sea_orm::Value::String(Some(Box::new(v.to_string())))
+            }
+        }
+        impl sea_orm::sea_query::ValueType for $ty {
+            fn try_from(
+                v: sea_orm::Value,
+            ) -> std::result::Result<Self, sea_orm::sea_query::ValueTypeErr> {
+                match v {
+                    sea_orm::Value::String(Some(s)) => {
+                        s.parse().map_err(|_| sea_orm::sea_query::ValueTypeErr)
+                    }
+                    _ => Err(sea_orm::sea_query::ValueTypeErr),
+                }
+            }
+            fn type_name() -> String {
+                stringify!($ty).to_owned()
+            }
+            fn array_type() -> sea_orm::sea_query::ArrayType {
+                sea_orm::sea_query::ArrayType::String
+            }
+            fn column_type() -> sea_orm::sea_query::ColumnType {
+                sea_orm::sea_query::ColumnType::String(sea_orm::sea_query::StringLen::None)
+            }
+        }
+        impl sea_orm::sea_query::Nullable for $ty {
+            fn null() -> sea_orm::Value {
+                sea_orm::Value::String(None)
+            }
+        }
+        impl sea_orm::TryFromU64 for $ty {
+            fn try_from_u64(_: u64) -> std::result::Result<Self, sea_orm::DbErr> {
+                Err(sea_orm::DbErr::ConvertFromU64(stringify!($ty)))
+            }
+        }
+    };
+}
+
+impl_sea_orm_value_for_newtype!(ObjectKey);
+impl_sea_orm_value_for_newtype!(Etag);
+impl_sea_orm_value_for_newtype!(HostId);
+impl_sea_orm_value_for_newtype!(FileExtension);
+
+impl sea_orm::TryGetable for FileSize {
+    fn try_get_by<I: sea_orm::ColIdx>(
+        res: &sea_orm::QueryResult,
+        idx: I,
+    ) -> std::result::Result<Self, sea_orm::TryGetError> {
+        let n: i64 = res.try_get_by::<i64, I>(idx)?;
+        Ok(FileSize::new(n.max(0) as u64))
+    }
+}
+impl From<FileSize> for sea_orm::Value {
+    fn from(v: FileSize) -> Self {
+        sea_orm::Value::BigInt(Some(v.as_u64() as i64))
+    }
+}
+impl sea_orm::sea_query::ValueType for FileSize {
+    fn try_from(v: sea_orm::Value) -> std::result::Result<Self, sea_orm::sea_query::ValueTypeErr> {
+        match v {
+            sea_orm::Value::BigInt(Some(n)) => Ok(FileSize::new(n.max(0) as u64)),
+            sea_orm::Value::Unsigned(Some(n)) => Ok(FileSize::new(n as u64)),
+            _ => Err(sea_orm::sea_query::ValueTypeErr),
+        }
+    }
+    fn type_name() -> String {
+        "FileSize".to_owned()
+    }
+    fn array_type() -> sea_orm::sea_query::ArrayType {
+        sea_orm::sea_query::ArrayType::BigInt
+    }
+    fn column_type() -> sea_orm::sea_query::ColumnType {
+        sea_orm::sea_query::ColumnType::BigInteger
+    }
+}
+impl sea_orm::sea_query::Nullable for FileSize {
+    fn null() -> sea_orm::Value {
+        sea_orm::Value::BigInt(None)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // BucketName
@@ -115,18 +212,6 @@ impl ObjectKey {
     /// View the underlying string.
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// Returns the parent directory key (everything before the last `/`),
-    /// or `None` if there is no `/` or the parent would be empty.
-    pub fn parent(&self) -> Option<ObjectKey> {
-        let pos = self.0.rfind('/')?;
-        if pos == 0 {
-            // Leading slash means parent would be empty — not a valid key.
-            return None;
-        }
-        let parent_str = self.0.get(..pos)?;
-        Some(Self(parent_str.to_string()))
     }
 
     /// Returns the portion after the last `/`, or `None` if the key ends
@@ -463,71 +548,106 @@ impl TryFrom<String> for FileExtension {
 // ---------------------------------------------------------------------------
 
 /// A file type enumeration mapping common extensions to their canonical name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize,
+)]
+#[sea_orm(rs_type = "String", db_type = "Text")]
 #[serde(rename_all = "snake_case")]
 pub enum FileType {
+    #[sea_orm(string_value = "jpeg")]
+    #[serde(rename = "jpeg")]
     Jpeg,
+    #[sea_orm(string_value = "png")]
+    #[serde(rename = "png")]
     Png,
+    #[sea_orm(string_value = "gif")]
+    #[serde(rename = "gif")]
     Gif,
+    #[sea_orm(string_value = "webp")]
+    #[serde(rename = "webp")]
     WebP,
+    #[sea_orm(string_value = "bmp")]
+    #[serde(rename = "bmp")]
     Bmp,
+    #[sea_orm(string_value = "svg")]
+    #[serde(rename = "svg")]
     Svg,
+    #[sea_orm(string_value = "tiff")]
+    #[serde(rename = "tiff")]
     Tiff,
+    #[sea_orm(string_value = "mp4")]
+    #[serde(rename = "mp4")]
     Mp4,
+    #[sea_orm(string_value = "mov")]
+    #[serde(rename = "mov")]
     Mov,
+    #[sea_orm(string_value = "avi")]
+    #[serde(rename = "avi")]
     Avi,
+    #[sea_orm(string_value = "mkv")]
+    #[serde(rename = "mkv")]
     Mkv,
+    #[sea_orm(string_value = "webm")]
+    #[serde(rename = "webm")]
     WebM,
+    #[sea_orm(string_value = "mp3")]
+    #[serde(rename = "mp3")]
     Mp3,
+    #[sea_orm(string_value = "flac")]
+    #[serde(rename = "flac")]
     Flac,
+    #[sea_orm(string_value = "wav")]
+    #[serde(rename = "wav")]
     Wav,
+    #[sea_orm(string_value = "ogg")]
+    #[serde(rename = "ogg")]
     Ogg,
+    #[sea_orm(string_value = "aac")]
+    #[serde(rename = "aac")]
     Aac,
+    #[sea_orm(string_value = "m4a")]
+    #[serde(rename = "m4a")]
     M4a,
+    #[sea_orm(string_value = "pdf")]
+    #[serde(rename = "pdf")]
     Pdf,
+    #[sea_orm(string_value = "doc")]
+    #[serde(rename = "doc")]
     Doc,
+    #[sea_orm(string_value = "docx")]
+    #[serde(rename = "docx")]
     Docx,
+    #[sea_orm(string_value = "xls")]
+    #[serde(rename = "xls")]
     Xls,
+    #[sea_orm(string_value = "xlsx")]
+    #[serde(rename = "xlsx")]
     Xlsx,
+    #[sea_orm(string_value = "ppt")]
+    #[serde(rename = "ppt")]
     Ppt,
+    #[sea_orm(string_value = "pptx")]
+    #[serde(rename = "pptx")]
     Pptx,
+    #[sea_orm(string_value = "zip")]
+    #[serde(rename = "zip")]
     Zip,
+    #[sea_orm(string_value = "rar")]
+    #[serde(rename = "rar")]
     Rar,
+    #[sea_orm(string_value = "tar_gz")]
+    #[serde(rename = "tar_gz")]
     TarGz,
+    #[sea_orm(string_value = "seven_z")]
+    #[serde(rename = "seven_z")]
     SevenZ,
+    #[sea_orm(string_value = "unknown")]
+    #[serde(rename = "unknown")]
     Unknown,
 }
 
-impl FileType {
-    /// Returns the [`FileCategory`] that this file type belongs to.
-    pub fn category(&self) -> FileCategory {
-        match self {
-            Self::Jpeg
-            | Self::Png
-            | Self::Gif
-            | Self::WebP
-            | Self::Bmp
-            | Self::Svg
-            | Self::Tiff => FileCategory::Image,
-            Self::Mp4 | Self::Mov | Self::Avi | Self::Mkv | Self::WebM => FileCategory::Video,
-            Self::Mp3 | Self::Flac | Self::Wav | Self::Ogg | Self::Aac | Self::M4a => {
-                FileCategory::Audio
-            }
-            Self::Pdf
-            | Self::Doc
-            | Self::Docx
-            | Self::Xls
-            | Self::Xlsx
-            | Self::Ppt
-            | Self::Pptx => FileCategory::Document,
-            Self::Zip | Self::Rar | Self::TarGz | Self::SevenZ => FileCategory::Archive,
-            Self::Unknown => FileCategory::Other,
-        }
-    }
-}
-
-impl fmt::Display for FileType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for FileType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Jpeg => write!(f, "jpeg"),
             Self::Png => write!(f, "png"),
@@ -563,7 +683,7 @@ impl fmt::Display for FileType {
     }
 }
 
-impl FromStr for FileType {
+impl std::str::FromStr for FileType {
     type Err = S3GalleryError;
 
     fn from_str(s: &str) -> Result<Self> {
@@ -598,6 +718,34 @@ impl FromStr for FileType {
             "tar_gz" => Ok(Self::TarGz),
             "seven_z" => Ok(Self::SevenZ),
             _ => Ok(Self::Unknown),
+        }
+    }
+}
+
+impl FileType {
+    /// Returns the [`FileCategory`] that this file type belongs to.
+    pub fn category(&self) -> FileCategory {
+        match self {
+            Self::Jpeg
+            | Self::Png
+            | Self::Gif
+            | Self::WebP
+            | Self::Bmp
+            | Self::Svg
+            | Self::Tiff => FileCategory::Image,
+            Self::Mp4 | Self::Mov | Self::Avi | Self::Mkv | Self::WebM => FileCategory::Video,
+            Self::Mp3 | Self::Flac | Self::Wav | Self::Ogg | Self::Aac | Self::M4a => {
+                FileCategory::Audio
+            }
+            Self::Pdf
+            | Self::Doc
+            | Self::Docx
+            | Self::Xls
+            | Self::Xlsx
+            | Self::Ppt
+            | Self::Pptx => FileCategory::Document,
+            Self::Zip | Self::Rar | Self::TarGz | Self::SevenZ => FileCategory::Archive,
+            Self::Unknown => FileCategory::Other,
         }
     }
 }
@@ -654,29 +802,37 @@ impl FromStr for FileCategory {
 // ---------------------------------------------------------------------------
 
 /// A metadata namespace, either a standard category or a custom string.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize,
+)]
+#[sea_orm(rs_type = "String", db_type = "Text")]
 #[serde(rename_all = "snake_case")]
 pub enum MetadataNamespace {
+    #[sea_orm(string_value = "exif")]
     Exif,
+    #[sea_orm(string_value = "video")]
     Video,
+    #[sea_orm(string_value = "audio")]
     Audio,
+    #[sea_orm(string_value = "general")]
     General,
-    Custom(String),
+    #[sea_orm(string_value = "custom")]
+    Custom,
 }
 
-impl fmt::Display for MetadataNamespace {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for MetadataNamespace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Exif => write!(f, "exif"),
             Self::Video => write!(f, "video"),
             Self::Audio => write!(f, "audio"),
             Self::General => write!(f, "general"),
-            Self::Custom(s) => write!(f, "{s}"),
+            Self::Custom => write!(f, "custom"),
         }
     }
 }
 
-impl FromStr for MetadataNamespace {
+impl std::str::FromStr for MetadataNamespace {
     type Err = S3GalleryError;
 
     fn from_str(s: &str) -> Result<Self> {
@@ -685,6 +841,7 @@ impl FromStr for MetadataNamespace {
             "video" => Ok(Self::Video),
             "audio" => Ok(Self::Audio),
             "general" => Ok(Self::General),
+            "custom" => Ok(Self::Custom),
             _ => Err(S3GalleryError::ValidationError(format!(
                 "invalid metadata namespace: {s:?}"
             ))),
@@ -697,16 +854,22 @@ impl FromStr for MetadataNamespace {
 // ---------------------------------------------------------------------------
 
 /// The state of metadata extraction for a file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize,
+)]
+#[sea_orm(rs_type = "String", db_type = "Text")]
 #[serde(rename_all = "snake_case")]
 pub enum MetadataState {
+    #[sea_orm(string_value = "pending")]
     Pending,
+    #[sea_orm(string_value = "extracted")]
     Extracted,
+    #[sea_orm(string_value = "failed")]
     Failed,
 }
 
-impl fmt::Display for MetadataState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for MetadataState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Pending => write!(f, "pending"),
             Self::Extracted => write!(f, "extracted"),
@@ -715,7 +878,7 @@ impl fmt::Display for MetadataState {
     }
 }
 
-impl FromStr for MetadataState {
+impl std::str::FromStr for MetadataState {
     type Err = S3GalleryError;
 
     fn from_str(s: &str) -> Result<Self> {
@@ -1009,6 +1172,241 @@ impl FromStr for ScanMode {
 }
 
 // ---------------------------------------------------------------------------
+// S3Path trait
+// ---------------------------------------------------------------------------
+
+/// Unified path operations for ObjectKey and Prefix.
+pub trait S3Path: Sized {
+    fn as_str(&self) -> &str;
+    fn parent(&self) -> Option<Prefix>;
+    fn last_segment(&self) -> Option<&str>;
+    fn join_key(&self, name: &str) -> ObjectKey;
+    fn join_dir(&self, name: &str) -> Prefix;
+}
+
+// ---------------------------------------------------------------------------
+// Prefix
+// ---------------------------------------------------------------------------
+
+/// A directory prefix. Empty string (root) or ends with `/`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Prefix(String);
+
+impl Prefix {
+    /// Validate and construct a new `Prefix`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `S3GalleryError::ValidationError` if the prefix is longer than
+    /// 1024 characters, or if it is non-empty and does not end with `/`.
+    pub fn new(s: impl Into<String>) -> Result<Self> {
+        let s = s.into();
+        let len = s.len();
+        if len > 1024 {
+            return Err(S3GalleryError::ValidationError(format!(
+                "prefix must be at most 1024 characters, got {len}"
+            )));
+        }
+        if !s.is_empty() && !s.ends_with('/') {
+            return Err(S3GalleryError::ValidationError(
+                "prefix must be empty or end with '/'".into(),
+            ));
+        }
+        Ok(Self(s))
+    }
+
+    /// View the underlying string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether this is the root prefix (empty string).
+    pub fn is_root(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Display for Prefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::str::FromStr for Prefix {
+    type Err = S3GalleryError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Self::new(s)
+    }
+}
+
+impl TryFrom<String> for Prefix {
+    type Error = S3GalleryError;
+
+    fn try_from(s: String) -> Result<Self> {
+        Self::new(s)
+    }
+}
+
+impl S3Path for Prefix {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn parent(&self) -> Option<Prefix> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let trimmed = self.0.trim_end_matches('/');
+        let pos = trimmed.rfind('/')?;
+        let parent_str = trimmed.get(..=pos)?;
+        Some(Prefix(parent_str.to_string()))
+    }
+
+    fn last_segment(&self) -> Option<&str> {
+        if self.0.is_empty() {
+            return None;
+        }
+        let trimmed = self.0.trim_end_matches('/');
+        if trimmed.is_empty() {
+            return None;
+        }
+        let pos = trimmed.rfind('/');
+        match pos {
+            Some(p) => Some(&trimmed[p + 1..]),
+            None => Some(trimmed),
+        }
+    }
+
+    #[allow(clippy::expect_used)]
+    fn join_key(&self, name: &str) -> ObjectKey {
+        ObjectKey::new(format!("{}{}", self.0, name)).expect("valid key")
+    }
+
+    #[allow(clippy::expect_used)]
+    fn join_dir(&self, name: &str) -> Prefix {
+        Prefix::new(format!("{}{}/", self.0, name)).expect("valid prefix")
+    }
+}
+
+impl S3Path for ObjectKey {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn parent(&self) -> Option<Prefix> {
+        let pos = self.0.rfind('/')?;
+        let parent_str = self.0.get(..=pos)?;
+        Some(Prefix(parent_str.to_string()))
+    }
+
+    fn last_segment(&self) -> Option<&str> {
+        self.file_name()
+    }
+
+    #[allow(clippy::expect_used)]
+    fn join_key(&self, name: &str) -> ObjectKey {
+        ObjectKey::new(format!("{}{}", self.0, name)).expect("valid key")
+    }
+
+    #[allow(clippy::expect_used)]
+    fn join_dir(&self, name: &str) -> Prefix {
+        Prefix::new(format!("{}{}/", self.0, name)).expect("valid prefix")
+    }
+}
+
+impl_sea_orm_value_for_newtype!(Prefix);
+
+// ---------------------------------------------------------------------------
+// S3Operation
+// ---------------------------------------------------------------------------
+
+/// S3 operations that can be recorded in traffic logs.
+#[derive(Debug, Clone, PartialEq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "String", db_type = "Text")]
+pub enum S3Operation {
+    #[sea_orm(string_value = "GetObject")]
+    GetObject,
+    #[sea_orm(string_value = "GetObjectRange")]
+    GetObjectRange,
+    #[sea_orm(string_value = "PutObject")]
+    PutObject,
+    #[sea_orm(string_value = "PutObjectIfNoneMatch")]
+    PutObjectIfNoneMatch,
+    #[sea_orm(string_value = "ListObjects")]
+    ListObjects,
+    #[sea_orm(string_value = "HeadObject")]
+    HeadObject,
+    #[sea_orm(string_value = "DeleteObject")]
+    DeleteObject,
+    #[sea_orm(string_value = "ObjectExists")]
+    ObjectExists,
+}
+
+impl std::fmt::Display for S3Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GetObject => write!(f, "GetObject"),
+            Self::GetObjectRange => write!(f, "GetObjectRange"),
+            Self::PutObject => write!(f, "PutObject"),
+            Self::PutObjectIfNoneMatch => write!(f, "PutObjectIfNoneMatch"),
+            Self::ListObjects => write!(f, "ListObjects"),
+            Self::HeadObject => write!(f, "HeadObject"),
+            Self::DeleteObject => write!(f, "DeleteObject"),
+            Self::ObjectExists => write!(f, "ObjectExists"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Direction
+// ---------------------------------------------------------------------------
+
+/// The direction of a traffic operation.
+#[derive(Debug, Clone, PartialEq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "String", db_type = "Text")]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    #[sea_orm(string_value = "download")]
+    Download,
+    #[sea_orm(string_value = "upload")]
+    Upload,
+}
+
+// ---------------------------------------------------------------------------
+// TagType
+// ---------------------------------------------------------------------------
+
+/// The origin of a tag.
+#[derive(Debug, Clone, PartialEq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "String", db_type = "Text")]
+#[serde(rename_all = "snake_case")]
+pub enum TagType {
+    #[sea_orm(string_value = "auto")]
+    Auto,
+    #[sea_orm(string_value = "manual")]
+    Manual,
+}
+
+// ---------------------------------------------------------------------------
+// ThumbnailFormat
+// ---------------------------------------------------------------------------
+
+/// The image format of a generated thumbnail.
+#[derive(Debug, Clone, PartialEq, sea_orm::EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "String", db_type = "Text")]
+#[serde(rename_all = "snake_case")]
+pub enum ThumbnailFormat {
+    #[sea_orm(string_value = "jpeg")]
+    Jpeg,
+    #[sea_orm(string_value = "png")]
+    Png,
+    #[sea_orm(string_value = "webp")]
+    WebP,
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1095,7 +1493,7 @@ mod tests {
         let key = ObjectKey::new("a/b/c")?;
         let parent = key.parent();
         assert!(parent.is_some());
-        assert_eq!(parent.unwrap().as_str(), "a/b");
+        assert_eq!(parent.unwrap().as_str(), "a/b/");
         Ok(())
     }
 
@@ -1104,7 +1502,7 @@ mod tests {
         let key = ObjectKey::new("a/b")?;
         let parent = key.parent();
         assert!(parent.is_some());
-        assert_eq!(parent.unwrap().as_str(), "a");
+        assert_eq!(parent.unwrap().as_str(), "a/");
         Ok(())
     }
 
@@ -1578,8 +1976,8 @@ mod tests {
 
     #[test]
     fn metadata_namespace_display_custom() {
-        let ns = MetadataNamespace::Custom("XMP".to_string());
-        assert_eq!(format!("{ns}"), "XMP");
+        let ns = MetadataNamespace::Custom;
+        assert_eq!(format!("{ns}"), "custom");
     }
 
     #[test]
@@ -1604,19 +2002,13 @@ mod tests {
     }
 
     #[test]
-    fn metadata_namespace_from_str_invalid() {
-        let err = "custom".parse::<MetadataNamespace>().unwrap_err();
-        assert!(matches!(err, S3GalleryError::ValidationError(_)));
-    }
-
-    #[test]
     fn metadata_namespace_serde_roundtrip() -> Result<()> {
         let variants = [
             MetadataNamespace::Exif,
             MetadataNamespace::Video,
             MetadataNamespace::Audio,
             MetadataNamespace::General,
-            MetadataNamespace::Custom("XMP".to_string()),
+            MetadataNamespace::Custom,
         ];
         for v in &variants {
             let json =

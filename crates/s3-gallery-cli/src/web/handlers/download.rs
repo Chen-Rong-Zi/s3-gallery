@@ -1,16 +1,29 @@
-
 use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
 };
 use s3_gallery_core::{
-    db::models::FileEntry,
     error::S3GalleryError,
     types::{BucketName, ObjectKey},
 };
 
 use crate::web::state::AppState;
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+#[allow(dead_code)]
+struct FileEntry {
+    pub host_id: String,
+    pub key: String,
+    pub etag: String,
+    pub size: i64,
+    pub last_modified: String,
+    pub content_type: Option<String>,
+    pub file_type: String,
+    pub metadata_state: String,
+    pub is_deleted: bool,
+    pub effective_date: String,
+}
 
 /// Extract the host_id from the first segment of a key.
 /// e.g., "photos/2023/autumn.jpg" -> ("photos", "photos/2023/autumn.jpg")
@@ -73,14 +86,21 @@ pub async fn download(State(state): State<AppState>, Path(key): Path<String>) ->
         }
     };
 
-    let pool = &state.db;
+    let pool = state.db.get_sqlite_connection_pool();
 
     // Fetch file metadata from the database
-    let file = match FileEntry::get_by_key(pool, host_id, full_key).await {
+    let file = match sqlx::query_as::<_, FileEntry>(
+        "SELECT * FROM files WHERE host_id = ?1 AND key = ?2 ORDER BY effective_date DESC LIMIT 1",
+    )
+    .bind(host_id)
+    .bind(full_key)
+    .fetch_one(pool)
+    .await
+    {
         Ok(f) => f,
         Err(e) => {
             return match e {
-                S3GalleryError::NotFound(_) => (
+                sqlx::Error::RowNotFound => (
                     StatusCode::NOT_FOUND,
                     [("content-type", "application/json")],
                     format!(

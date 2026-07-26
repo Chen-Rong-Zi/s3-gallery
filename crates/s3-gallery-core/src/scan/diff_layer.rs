@@ -5,28 +5,47 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use sea_orm::DatabaseConnection;
 use sqlx::SqlitePool;
 use tokio::sync::Mutex;
 use tower::service_fn;
 use tower::util::BoxService;
 use tower::{Layer, Service};
 
-use crate::classify::classifier::{classify_extension, content_type_from_extension, parse_extension};
+use crate::classify::classifier::{
+    classify_extension, content_type_from_extension, parse_extension,
+};
+use crate::entity::file::Model as FileEntry;
 use crate::s3::client::ObjectSummary;
-use crate::types::{Etag, FileSize, ObjectKey};
 use crate::scan::diff::{apply_diff, diff_objects};
 use crate::scan::pipeline::{HostDiffResult, ScanRequest, ScanResponse};
+use crate::types::{Etag, FileSize, HostId, MetadataState, ObjectKey};
+
+/// Raw DB row type from sqlx queries listing files.
+type FileRow = (
+    String,
+    String,
+    String,
+    i64,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    bool,
+);
 use crate::scan::scan_objects::ScanObjectEntry;
 use crate::types::FileType;
 
 /// DiffLayer wraps an inner service with DB diff logic.
 pub struct DiffLayer {
     db: SqlitePool,
+    sea_db: DatabaseConnection,
 }
 
 impl DiffLayer {
-    pub fn new(db: SqlitePool) -> Self {
-        Self { db }
+    pub fn new(db: SqlitePool, sea_db: DatabaseConnection) -> Self {
+        Self { db, sea_db }
     }
 }
 
@@ -41,9 +60,11 @@ where
 
     fn layer(&self, inner: I) -> Self::Service {
         let db = self.db.clone();
+        let sea_db = self.sea_db.clone();
         let inner = Arc::new(Mutex::new(inner));
         BoxService::new(service_fn(move |req: ScanRequest| {
             let db = db.clone();
+            let sea_db = sea_db.clone();
             let inner = inner.clone();
             async move {
                 // 1. Call inner (DiscoverLayer)
@@ -55,10 +76,9 @@ where
                 // 2. For each host, diff scan_objects against files table
                 let mut diff_results = Vec::new();
                 for host in &resp.hosts {
-                    let scan_entries = ScanObjectEntry::list_by_scan(
-                        &db, &resp.scan_id, &host.host_id,
-                    )
-                    .await?;
+                    let scan_entries =
+                        ScanObjectEntry::list_by_scan(&sea_db, &resp.scan_id, &host.host_id)
+                            .await?;
 
                     // Convert to ObjectSummary for diff
                     let s3_objects: Vec<ObjectSummary> = scan_entries
@@ -76,10 +96,59 @@ where
                         .collect();
 
                     // Get existing DB entries
-                    let db_entries = crate::db::models::FileEntry::list_by_prefix(
-                        &db, &host.host_id, host.prefix.as_str(),
+                    let db_rows: Vec<FileRow> = sqlx::query_as(
+                        "SELECT host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted                          FROM files WHERE host_id = ? AND key LIKE ? || '%' AND is_deleted = 0 ORDER BY key",
                     )
-                    .await?;
+                    .bind(&host.host_id)
+                    .bind(host.prefix.as_str())
+                    .fetch_all(&db)
+                    .await
+                    .map_err(|e| crate::error::S3GalleryError::DbError(format!("Failed to list files by prefix: {e}")))?;
+                    let mut db_entries: Vec<FileEntry> = Vec::with_capacity(db_rows.len());
+                    for (
+                        hid,
+                        key,
+                        etag,
+                        size,
+                        last_modified,
+                        content_type,
+                        file_type,
+                        metadata_state,
+                        effective_date,
+                        is_deleted,
+                    ) in db_rows
+                    {
+                        let host_id = HostId::new(hid).map_err(|e| {
+                            crate::error::S3GalleryError::DbError(format!("Invalid host_id: {e}"))
+                        })?;
+                        let key = ObjectKey::new(key).map_err(|e| {
+                            crate::error::S3GalleryError::DbError(format!("Invalid key: {e}"))
+                        })?;
+                        let etag = Etag::new(etag).map_err(|e| {
+                            crate::error::S3GalleryError::DbError(format!("Invalid etag: {e}"))
+                        })?;
+                        let file_type = file_type.parse::<FileType>().map_err(|e| {
+                            crate::error::S3GalleryError::DbError(format!("Invalid file_type: {e}"))
+                        })?;
+                        let metadata_state =
+                            metadata_state.parse::<MetadataState>().map_err(|e| {
+                                crate::error::S3GalleryError::DbError(format!(
+                                    "Invalid metadata_state: {e}"
+                                ))
+                            })?;
+                        db_entries.push(FileEntry {
+                            host_id,
+                            key,
+                            etag,
+                            size: FileSize::new(size as u64),
+                            last_modified,
+                            content_type,
+                            file_type,
+                            metadata_state,
+                            effective_date,
+                            is_deleted,
+                        });
+                    }
 
                     // Diff
                     let diff = diff_objects(&s3_objects, &db_entries);

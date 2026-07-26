@@ -1,10 +1,15 @@
+use crate::web::handlers::{render_template, HandlerResult};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use crate::web::handlers::{HandlerResult, render_template};
-use s3_gallery_core::db::models::{FileEntry, MetadataEntry, ThumbnailEntry};
-use s3_gallery_core::error::S3GalleryError;
+use s3_gallery_core::entity::file;
+use s3_gallery_core::entity::metadata;
+use s3_gallery_core::entity::thumbnail;
+use s3_gallery_core::types::FileSize;
+use sea_orm::ColumnTrait;
+use sea_orm::EntityTrait;
+use sea_orm::QueryFilter;
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -20,21 +25,8 @@ struct MetadataItem {
 /// Format a file size in bytes into a human-readable string.
 ///
 /// Examples: "1.5 KB", "3.2 MB", "1.0 GB"
-fn format_file_size(size: i64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size_f = size as f64;
-    let mut unit_idx = 0;
-
-    while size_f >= 1024.0 && unit_idx < UNITS.len() - 1 {
-        size_f /= 1024.0;
-        unit_idx += 1;
-    }
-
-    if unit_idx == 0 {
-        format!("{} {}", size, UNITS[unit_idx])
-    } else {
-        format!("{:.1} {}", size_f, UNITS[unit_idx])
-    }
+fn format_file_size(size: FileSize) -> String {
+    format!("{}", size)
 }
 
 /// Extract the file name from a key (last segment after '/').
@@ -51,10 +43,7 @@ fn file_name_from_key(key: &str) -> String {
 ///
 /// Displays file information, metadata grouped by namespace, and a thumbnail
 /// preview for the specified file.
-pub async fn file_detail(
-    State(state): State<AppState>,
-    Path(key): Path<String>,
-) -> HandlerResult {
+pub async fn file_detail(State(state): State<AppState>, Path(key): Path<String>) -> HandlerResult {
     tracing::info!(handler = "file_detail", key = %key, "serving file detail");
 
     // Parse host_id from key (first segment before '/')
@@ -82,39 +71,45 @@ pub async fn file_detail(
         );
     }
 
-    let pool = &state.db;
-
     // Fetch the file entry by its key.
-    let file = match FileEntry::get_by_key(pool, host_id, &key).await {
-        Ok(file) => file,
+    let file = match file::Entity::find()
+        .filter(
+            sea_orm::Condition::all()
+                .add(file::Column::HostId.eq(host_id))
+                .add(file::Column::Key.eq(key.as_str())),
+        )
+        .one(&state.db)
+        .await
+    {
+        Ok(Some(file)) => file,
+        Ok(None) => {
+            tracing::error!(handler = "file_detail", key = %key, "file not found");
+            return HandlerResult::Error(
+                StatusCode::NOT_FOUND,
+                json!({
+                    "error": "file not found",
+                    "detail": format!("No file with key: {key}")
+                }),
+            );
+        }
         Err(e) => {
-            return match e {
-                S3GalleryError::NotFound(_) => {
-                    tracing::error!(handler = "file_detail", key = %key, error = %e, "file not found");
-                    HandlerResult::Error(
-                        StatusCode::NOT_FOUND,
-                        json!({
-                            "error": "file not found",
-                            "detail": format!("No file with key: {key}")
-                        }),
-                    )
-                }
-                _ => {
-                    tracing::error!(handler = "file_detail", key = %key, error = %e, "database error fetching file");
-                    HandlerResult::Error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        json!({
-                            "error": "database error",
-                            "detail": e.to_string()
-                        }),
-                    )
-                }
-            };
+            tracing::error!(handler = "file_detail", key = %key, error = %e, "database error");
+            return HandlerResult::Error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({
+                    "error": "database error",
+                    "detail": e.to_string()
+                }),
+            );
         }
     };
 
     // Fetch metadata entries for this file.
-    let metadata_entries = match MetadataEntry::get_by_file_key(pool, &key).await {
+    let metadata_entries = match metadata::Entity::find()
+        .filter(metadata::Column::FileKey.eq(key.as_str()))
+        .all(&state.db)
+        .await
+    {
         Ok(entries) => entries,
         Err(e) => {
             tracing::error!(handler = "file_detail", key = %key, error = %e, "failed to fetch metadata");
@@ -132,7 +127,7 @@ pub async fn file_detail(
     let mut metadata_by_namespace: BTreeMap<String, Vec<MetadataItem>> = BTreeMap::new();
     for entry in &metadata_entries {
         let items = metadata_by_namespace
-            .entry(entry.namespace.clone())
+            .entry(entry.namespace.to_string())
             .or_default();
         items.push(MetadataItem {
             key: entry.key.clone(),
@@ -141,7 +136,11 @@ pub async fn file_detail(
     }
 
     // Check if a thumbnail exists for this file.
-    let has_thumbnail = ThumbnailEntry::get(pool, &key).await.is_ok();
+    let has_thumbnail = thumbnail::Entity::find()
+        .filter(thumbnail::Column::FileKey.eq(key.as_str()))
+        .one(&state.db)
+        .await
+        .is_ok_and(|r| r.is_some());
 
     tracing::info!(handler = "file_detail", key = %key, namespaces = %metadata_by_namespace.len(), has_thumbnail = %has_thumbnail, "file detail rendered");
 

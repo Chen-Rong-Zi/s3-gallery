@@ -1,4 +1,3 @@
-use crate::db::models::ThumbnailEntry;
 use crate::error::{Result, S3GalleryError};
 use crate::types::ObjectKey;
 use chrono::Utc;
@@ -13,25 +12,31 @@ pub const THUMBNAIL_SIZE: u32 = 320;
 pub const MAX_CACHE_BYTES: u64 = 500 * 1024 * 1024;
 
 /// Check the thumbnail cache for a given key. Returns None if not cached.
-async fn get_cached_entry(db: &SqlitePool, key: &ObjectKey) -> Result<Option<ThumbnailEntry>> {
-    match ThumbnailEntry::get(db, key.as_str()).await {
-        Ok(entry) => Ok(Some(entry)),
-        Err(S3GalleryError::NotFound(_)) => Ok(None),
-        Err(e) => Err(e),
-    }
+async fn get_cached_entry(db: &SqlitePool, key: &ObjectKey) -> Result<Option<Vec<u8>>> {
+    let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT data FROM thumbnails WHERE file_key = ?")
+        .bind(key.as_str())
+        .fetch_optional(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(format!("Failed to get thumbnail: {e}")))?;
+    Ok(row.map(|r| r.0))
 }
 
 /// Store a thumbnail in the cache.
 async fn cache_entry(db: &SqlitePool, key: &ObjectKey, data: &[u8]) -> Result<()> {
-    let entry = ThumbnailEntry {
-        file_key: key.as_str().to_string(),
-        data: data.to_vec(),
-        format: "jpeg".to_string(),
-        width: Some(THUMBNAIL_SIZE as i64),
-        height: None,
-        cached_at: Utc::now().to_rfc3339(),
-    };
-    ThumbnailEntry::insert(db, &entry).await
+    sqlx::query(
+        "INSERT OR REPLACE INTO thumbnails (file_key, data, format, width, height, cached_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(key.as_str())
+    .bind(data)
+    .bind("jpeg")
+    .bind(None::<i64>)
+    .bind(None::<i64>)
+    .bind(Utc::now().to_rfc3339())
+    .execute(db)
+    .await
+    .map_err(|e| S3GalleryError::DbError(format!("Failed to insert thumbnail: {e}")))?;
+    Ok(())
 }
 
 /// Generate a thumbnail from raw image bytes.
@@ -78,13 +83,13 @@ impl ThumbnailCache {
     /// Returns `S3GalleryError` if the cache lookup fails or thumbnail generation fails.
     pub async fn get_or_generate(&self, key: &ObjectKey, data: &[u8]) -> Result<Vec<u8>> {
         // Try cache first
-        if let Some(entry) = get_cached_entry(&self.db, key).await? {
+        if let Some(data) = get_cached_entry(&self.db, key).await? {
             tracing::debug!(
                 target: "s3_gallery::thumbnail",
                 key = %key,
                 "Thumbnail cache hit"
             );
-            return Ok(entry.data);
+            return Ok(data);
         }
 
         // Generate and cache
@@ -109,8 +114,8 @@ impl ThumbnailCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::migrate::run_full_migration;
     use crate::db::pool::create_pool;
-    use crate::db::schema::run_migrations;
     use image::RgbImage;
     use tempfile::tempdir;
 
@@ -143,8 +148,9 @@ mod tests {
     async fn test_thumbnail_cache_get_or_generate() -> Result<()> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
+        let sea_db = create_pool(&db_path).await?;
+        let pool = sea_db.get_sqlite_connection_pool().clone();
+        run_full_migration(&sea_db).await?;
 
         let cache = ThumbnailCache::new(pool.clone());
         let key = ObjectKey::new("test.jpg")?;
@@ -156,19 +162,24 @@ mod tests {
         }
 
         // Insert a file entry first to satisfy the foreign key constraint.
-        let file = crate::db::models::FileEntry {
-            host_id: "test-host".to_string(),
-            key: "test.jpg".to_string(),
-            etag: "\"abc123\"".to_string(),
-            size: 1024,
-            last_modified: "2026-01-01T00:00:00Z".to_string(),
-            content_type: Some("image/jpeg".to_string()),
-            file_type: "jpeg".to_string(),
-            metadata_state: "pending".to_string(),
-            effective_date: "".to_string(),
-            is_deleted: false,
-        };
-        crate::db::models::FileEntry::insert(&pool, &file).await?;
+        sqlx::query(
+            "INSERT INTO files (host_id, key, etag, size, last_modified, content_type, file_type, \
+             metadata_state, effective_date, is_deleted) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind("test-host")
+        .bind("test.jpg")
+        .bind("\"abc123\"")
+        .bind(1024i64)
+        .bind("2026-01-01T00:00:00Z")
+        .bind(Some("image/jpeg"))
+        .bind("jpeg")
+        .bind("pending")
+        .bind("")
+        .bind(false)
+        .execute(&pool)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         // First call: generate and cache
         let thumb1 = cache.get_or_generate(&key, &img_data).await?;

@@ -8,7 +8,6 @@ use std::task::{Context, Poll};
 
 use tower::Service;
 
-use crate::db::models::{FileTagEntry, TagEntry};
 use crate::error::{Result, S3GalleryError};
 use crate::extractor::tag_rules::{evaluate_all, TagRule};
 use crate::scan::pipeline::{TagRequest, TagResponse};
@@ -44,22 +43,44 @@ impl Service<TagRequest> for TagService {
             let tags = evaluate_all(&tag_rules, &req.exif_data.items, &req.file_type);
             let mut tag_names = Vec::new();
             for tag in &tags {
-                let tag_id = TagEntry::ensure_exists(&db, &tag.tag_name, &tag.tag_type).await?;
-                FileTagEntry::insert(&db, &FileTagEntry {
-                    file_key: req.key.to_string(),
-                    tag_id,
-                })
-                .await?;
+                sqlx::query("INSERT OR IGNORE INTO tags (tag_name, tag_type) VALUES (?, ?)")
+                    .bind(&tag.tag_name)
+                    .bind(&tag.tag_type)
+                    .execute(&db)
+                    .await
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+                let tag_id: i64 = sqlx::query_scalar("SELECT tag_id FROM tags WHERE tag_name = ?")
+                    .bind(&tag.tag_name)
+                    .fetch_one(&db)
+                    .await
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+                sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
+                    .bind(req.key.to_string())
+                    .bind(tag_id)
+                    .execute(&db)
+                    .await
+                    .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
                 tag_names.push(tag.tag_name.clone());
             }
 
             // 2. 添加 exif:yes 标签
-            let exif_tag_id = TagEntry::ensure_exists(&db, "exif:yes", "auto").await?;
-            FileTagEntry::insert(&db, &FileTagEntry {
-                file_key: req.key.to_string(),
-                tag_id: exif_tag_id,
-            })
-            .await?;
+            sqlx::query("INSERT OR IGNORE INTO tags (tag_name, tag_type) VALUES (?, ?)")
+                .bind("exif:yes")
+                .bind("auto")
+                .execute(&db)
+                .await
+                .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            let exif_tag_id: i64 = sqlx::query_scalar("SELECT tag_id FROM tags WHERE tag_name = ?")
+                .bind("exif:yes")
+                .fetch_one(&db)
+                .await
+                .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+            sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
+                .bind(req.key.to_string())
+                .bind(exif_tag_id)
+                .execute(&db)
+                .await
+                .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
             tag_names.push("exif:yes".to_string());
 
             // 3. 更新 effective_date 和 metadata_state

@@ -1,14 +1,16 @@
 //! File statistics functionality.
 
 use std::collections::HashMap;
-use std::str::FromStr;
 
-use sqlx::SqlitePool;
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter,
+    Statement,
+};
 
-use crate::db::models::FileEntry;
+use crate::entity::file;
 use crate::error::Result;
-use crate::types::FileSize;
-use crate::util::db_helpers::{fetch_all_opt, fetch_scalar_opt};
+use crate::error::S3GalleryError;
+use crate::types::{FileSize, MetadataState};
 
 /// Statistics about files in the database.
 #[derive(Debug, Clone)]
@@ -34,71 +36,82 @@ pub struct FileStats {
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-pub async fn get_stats(db: &SqlitePool, host_id: Option<&str>) -> Result<FileStats> {
+pub async fn get_stats(db: &DatabaseConnection, host_id: Option<&str>) -> Result<FileStats> {
     let mut by_category = HashMap::new();
     let mut by_file_type = HashMap::new();
 
-    let total_files: i64 = fetch_scalar_opt(
-        db,
-        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0",
-        host_id,
-    )
-    .await?;
+    // Build base query for non-deleted files
+    let mut active_query = file::Entity::find().filter(file::Column::IsDeleted.eq(false));
+    let mut deleted_query = file::Entity::find().filter(file::Column::IsDeleted.eq(true));
+    if let Some(hid) = host_id {
+        active_query = active_query.filter(file::Column::HostId.eq(hid));
+        deleted_query = deleted_query.filter(file::Column::HostId.eq(hid));
+    }
 
-    let total_size: Option<i64> = fetch_scalar_opt(
-        db,
-        "SELECT SUM(size) FROM files WHERE host_id = ? AND is_deleted = 0",
-        host_id,
-    )
-    .await?;
+    let total_files: u64 = active_query
+        .clone()
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+        .len() as u64;
 
-    let deleted_files: i64 = fetch_scalar_opt(
-        db,
-        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 1",
-        host_id,
-    )
-    .await?;
+    let deleted_files: u64 = deleted_query
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+        .len() as u64;
 
-    let metadata_extracted: i64 = fetch_scalar_opt(
-        db,
-        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0 AND metadata_state = 'extracted'",
-        host_id,
-    )
-    .await?;
+    // Metadata state counts
+    let mut extracted_query = file::Entity::find()
+        .filter(file::Column::IsDeleted.eq(false))
+        .filter(file::Column::MetadataState.eq(MetadataState::Extracted));
+    let mut pending_query = file::Entity::find()
+        .filter(file::Column::IsDeleted.eq(false))
+        .filter(file::Column::MetadataState.eq(MetadataState::Pending));
+    if let Some(hid) = host_id {
+        extracted_query = extracted_query.filter(file::Column::HostId.eq(hid));
+        pending_query = pending_query.filter(file::Column::HostId.eq(hid));
+    }
 
-    let metadata_pending: i64 = fetch_scalar_opt(
-        db,
-        "SELECT COUNT(*) FROM files WHERE host_id = ? AND is_deleted = 0 AND metadata_state = 'pending'",
-        host_id,
-    )
-    .await?;
+    let metadata_extracted: u64 = extracted_query
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+        .len() as u64;
 
-    let files: Vec<FileEntry> = fetch_all_opt(
-        db,
-        "SELECT * FROM files WHERE host_id = ? AND is_deleted = 0",
-        host_id,
-    )
-    .await?;
+    let metadata_pending: u64 = pending_query
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?
+        .len() as u64;
 
-    for file in files {
-        *by_file_type.entry(file.file_type.clone()).or_insert(0) += 1;
+    // Load all non-deleted files for type/category breakdown and total size
+    let mut files_query = file::Entity::find().filter(file::Column::IsDeleted.eq(false));
+    if let Some(hid) = host_id {
+        files_query = files_query.filter(file::Column::HostId.eq(hid));
+    }
+    let files = files_query
+        .all(db)
+        .await
+        .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        let file_type = crate::types::FileType::from_str(&file.file_type)
-            .unwrap_or(crate::types::FileType::Unknown);
-        let category = file_type.category();
+    let mut total_size_u64: u64 = 0;
+    for f in &files {
+        total_size_u64 += f.size.as_u64();
+        let ft_str = f.file_type.to_string();
+        *by_file_type.entry(ft_str).or_insert(0) += 1;
+        let category = f.file_type.category();
         *by_category.entry(category.to_string()).or_insert(0) += 1;
     }
 
-    let total_size_u64 = u64::try_from(total_size.unwrap_or(0)).unwrap_or(0);
-
     Ok(FileStats {
-        total_files: u64::try_from(total_files).unwrap_or(0),
+        total_files,
         total_size: FileSize::new(total_size_u64),
         by_category,
         by_file_type,
-        deleted_files: u64::try_from(deleted_files).unwrap_or(0),
-        metadata_extracted: u64::try_from(metadata_extracted).unwrap_or(0),
-        metadata_pending: u64::try_from(metadata_pending).unwrap_or(0),
+        deleted_files,
+        metadata_extracted,
+        metadata_pending,
     })
 }
 
@@ -109,15 +122,26 @@ pub async fn get_stats(db: &SqlitePool, host_id: Option<&str>) -> Result<FileSta
 /// # Errors
 ///
 /// Returns an error if any database query fails.
-pub async fn get_all_host_stats(db: &SqlitePool) -> Result<(FileStats, Vec<(String, FileStats)>)> {
+pub async fn get_all_host_stats(
+    db: &DatabaseConnection,
+) -> Result<(FileStats, Vec<(String, FileStats)>)> {
     let total = get_stats(db, None).await?;
 
-    let host_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT host_id FROM files WHERE is_deleted = 0 ORDER BY host_id",
-    )
-    .fetch_all(db)
-    .await
-    .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+    let rows = db
+        .query_all(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT DISTINCT host_id FROM files WHERE is_deleted = 0 ORDER BY host_id".to_string(),
+        ))
+        .await
+        .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+
+    let mut host_ids = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let hid: String = row
+            .try_get("", "host_id")
+            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
+        host_ids.push(hid);
+    }
 
     let mut per_host = Vec::with_capacity(host_ids.len());
     for hid in &host_ids {
@@ -131,98 +155,62 @@ pub async fn get_all_host_stats(db: &SqlitePool) -> Result<(FileStats, Vec<(Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models::FileEntry;
+    use crate::db::migrate::run_full_migration;
     use crate::db::pool::create_pool;
-    use crate::db::schema::run_migrations;
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
-    async fn setup_test_db() -> Result<(SqlitePool, tempfile::TempDir)> {
+    async fn setup_test_db() -> Result<(DatabaseConnection, tempfile::TempDir)> {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let pool = create_pool(&db_path).await?;
-        run_migrations(&pool).await?;
-        Ok((pool, dir))
+        let db = create_pool(&db_path).await?;
+        run_full_migration(&db).await?;
+        Ok((db, dir))
     }
 
-    async fn seed_test_files(pool: &SqlitePool) -> Result<()> {
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "img001.jpg".to_string(),
-                etag: "\"abc123\"".to_string(),
-                size: 1024,
-                last_modified: "2024-01-01T00:00:00Z".to_string(),
-                content_type: Some("image/jpeg".to_string()),
-                file_type: "jpeg".to_string(),
-                metadata_state: "extracted".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+    async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
+        let pool = db.get_sqlite_connection_pool();
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("img001.jpg").bind("\"abc123\"")
+        .bind(1024i64).bind("2024-01-01T00:00:00Z").bind(Some("image/jpeg"))
+        .bind("jpeg").bind("extracted").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "img002.png".to_string(),
-                etag: "\"def456\"".to_string(),
-                size: 2048,
-                last_modified: "2024-01-02T00:00:00Z".to_string(),
-                content_type: Some("image/png".to_string()),
-                file_type: "png".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("img002.png").bind("\"def456\"")
+        .bind(2048i64).bind("2024-01-02T00:00:00Z").bind(Some("image/png"))
+        .bind("png").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "video.mp4".to_string(),
-                etag: "\"ghi789\"".to_string(),
-                size: 50000,
-                last_modified: "2024-02-01T00:00:00Z".to_string(),
-                content_type: Some("video/mp4".to_string()),
-                file_type: "mp4".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("video.mp4").bind("\"ghi789\"")
+        .bind(50000i64).bind("2024-02-01T00:00:00Z").bind(Some("video/mp4"))
+        .bind("mp4").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "deleted.txt".to_string(),
-                etag: "\"jkl012\"".to_string(),
-                size: 50,
-                last_modified: "2024-03-01T00:00:00Z".to_string(),
-                content_type: None,
-                file_type: "unknown".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: true,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("deleted.txt").bind("\"jkl012\"")
+        .bind(50i64).bind("2024-03-01T00:00:00Z").bind(None::<String>)
+        .bind("unknown").bind("pending").bind("").bind(true)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         Ok(())
     }
 
     #[tokio::test]
     async fn test_get_stats() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let stats = get_stats(&pool, Some("test-host")).await?;
+        let stats = get_stats(&db, Some("test-host")).await?;
 
         assert_eq!(stats.total_files, 3);
         assert_eq!(stats.total_size.as_u64(), 1024 + 2048 + 50000);
@@ -242,9 +230,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_stats_empty() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
+        let (db, _dir) = setup_test_db().await?;
 
-        let stats = get_stats(&pool, Some("test-host")).await?;
+        let stats = get_stats(&db, Some("test-host")).await?;
 
         assert_eq!(stats.total_files, 0);
         assert_eq!(stats.total_size.as_u64(), 0);
@@ -257,10 +245,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_all_host_stats() -> Result<()> {
-        let (pool, _dir) = setup_test_db().await?;
-        seed_test_files(&pool).await?;
+        let (db, _dir) = setup_test_db().await?;
+        seed_test_files(&db).await?;
 
-        let (total, per_host) = get_all_host_stats(&pool).await?;
+        let (total, per_host) = get_all_host_stats(&db).await?;
 
         assert_eq!(total.total_files, 3);
         assert_eq!(total.deleted_files, 1);
