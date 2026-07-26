@@ -12,7 +12,6 @@ use tower::util::BoxService;
 use tower::{Layer, Service};
 
 use crate::classify::classifier::{classify_extension, parse_extension};
-use crate::db::models::FileEntry;
 use crate::error::S3GalleryError;
 use crate::scan::batch_service::BatchService;
 use crate::scan::exif_service::ExifService;
@@ -87,8 +86,8 @@ where
                     }
 
                     // Find pending files
-                    let pending: Vec<FileEntry> = sqlx::query_as(
-                        "SELECT * FROM files WHERE host_id = ? AND metadata_state = 'pending' AND is_deleted = 0",
+                    let pending: Vec<(String, String, String, i64, String, Option<String>, String, String, String, bool)> = sqlx::query_as(
+                        "SELECT host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted FROM files WHERE host_id = ? AND metadata_state = 'pending' AND is_deleted = 0",
                     )
                     .bind(&host.host_id)
                     .fetch_all(&db)
@@ -106,13 +105,13 @@ where
                     let mut exif_reqs = Vec::new();
 
                     for entry in &pending {
-                        let key_str = entry.key.as_str();
+                        let key_str = entry.1.as_str();
                         let file_name = key_str.rsplit('/').next().unwrap_or(key_str);
                         if let Some(ext) = parse_extension(file_name) {
                             let file_type = classify_extension(&ext).to_string();
-                            if let Ok(key) = ObjectKey::new(entry.key.clone()) {
+                            if let Ok(key) = ObjectKey::new(entry.1.clone()) {
                                 contexts.push(ExifContext {
-                                    key: entry.key.clone(),
+                                    key: entry.1.clone(),
                                     file_type: file_type.clone(),
                                     host_id: host.host_id.clone(),
                                 });

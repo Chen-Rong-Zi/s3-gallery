@@ -275,7 +275,8 @@ async fn cleanup_old_data(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use crate::db::schema::run_migrations;
+    use crate::db::migrate::run_full_migration;
+    use crate::db::pool::create_pool;
     use crate::s3::traffic_recorder::TrafficRecord;
     use crate::types::S3Operation;
     use tempfile::tempdir;
@@ -284,11 +285,9 @@ mod tests {
     async fn test_flush_batch_writes_to_db() -> crate::error::Result<()> {
         let dir = tempdir().map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-        let pool = sqlx::SqlitePool::connect(&db_url)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
-        run_migrations(&pool).await?;
+        let db = create_pool(&db_path).await?;
+        run_full_migration(&db).await?;
+        let pool = db.get_sqlite_connection_pool();
 
         let records = vec![
             TrafficRecord {
@@ -326,7 +325,7 @@ mod tests {
         let log_rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
             "SELECT business, operation, bytes, count FROM traffic_log ORDER BY business",
         )
-        .fetch_all(&pool)
+        .fetch_all(pool)
         .await
         .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
 
@@ -343,7 +342,7 @@ mod tests {
         let file_rows: Vec<(String, i64)> = sqlx::query_as(
             "SELECT file_key, bytes FROM traffic_file_log ORDER BY file_key",
         )
-        .fetch_all(&pool)
+        .fetch_all(pool)
         .await
         .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
 
@@ -360,11 +359,9 @@ mod tests {
     async fn test_spawn_batch_writer_sends_records() -> crate::error::Result<()> {
         let dir = tempdir().map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
-        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
-        let pool = sqlx::SqlitePool::connect(&db_url)
-            .await
-            .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
-        run_migrations(&pool).await?;
+        let db = create_pool(&db_path).await?;
+        run_full_migration(&db).await?;
+        let pool = db.get_sqlite_connection_pool();
 
         let handle = spawn_batch_writer(pool.clone(), 1, 100); // flush every 1s
 
@@ -384,7 +381,7 @@ mod tests {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM traffic_log WHERE business = 'test_biz'",
         )
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
         assert_eq!(count, 1, "record should be persisted after flush");

@@ -6,9 +6,8 @@ use sqlx::SqlitePool;
 use tokio::net::TcpListener;
 use tower::layer::Layer;
 
-use s3_gallery_core::db::models::HostConfigEntry;
+use s3_gallery_core::db::migrate::run_full_migration;
 use s3_gallery_core::db::pool::create_pool;
-use s3_gallery_core::db::schema::run_migrations;
 use s3_gallery_core::db::status::{check_db_status, decide_action, DbAction};
 use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::config::OssConfig;
@@ -17,11 +16,25 @@ use s3_gallery_core::s3::real::RealS3Client;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::s3::traffic_persist::spawn_batch_writer;
 use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
+use s3_gallery_core::entity::host_config;
 use s3_gallery_core::types::BucketName;
+use s3_gallery_core::types::HostId;
 
 use crate::cli::Cli;
 use crate::web::router::create_router;
 use crate::web::state::AppState;
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct HostConfigEntry {
+    pub host_id: String,
+    pub host_name: String,
+    pub host_type: String,
+    pub description: String,
+    pub created_at: String,
+    pub bucket: String,
+    pub endpoint: String,
+    pub region: String,
+}
 
 pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<String>) -> Result<()> {
     let db_path = &cli.db_path;
@@ -46,10 +59,15 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
 
     // Create pool, run migrations
     let db = create_pool(db_path).await?;
-    run_migrations(db.get_sqlite_connection_pool()).await?;
+    run_full_migration(&db).await?;
 
     // Read all hosts from DB, or discover from files table
-    let mut hosts = HostConfigEntry::list_all(db.get_sqlite_connection_pool()).await?;
+    let mut hosts: Vec<HostConfigEntry> = sqlx::query_as(
+        "SELECT * FROM host_config ORDER BY host_id"
+    )
+    .fetch_all(db.get_sqlite_connection_pool())
+    .await
+    .map_err(|e| S3GalleryError::DbError(format!("Failed to list hosts: {e}")))?;
     if hosts.is_empty() {
         // No host_config entries — probe files table for distinct host_ids
         tracing::info!("no hosts in host_config, probing files table");
@@ -133,7 +151,20 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
     let app_state = AppState {
         templates: Arc::new(env),
         db,
-        hosts,
+        hosts: hosts.into_iter().map(|h| {
+            let host_id = HostId::new(h.host_id)
+                .map_err(|e| S3GalleryError::Internal(format!("Invalid host_id: {e}")))?;
+            Ok::<_, S3GalleryError>(host_config::Model {
+                host_id,
+                host_name: h.host_name,
+                host_type: h.host_type,
+                description: h.description,
+                created_at: h.created_at,
+                bucket: h.bucket,
+                endpoint: h.endpoint,
+                region: h.region,
+            })
+        }).collect::<Result<Vec<_>>>()?,
         s3_stack,
         traffic_recorder: Some(recorder),
         prefix,
@@ -143,7 +174,7 @@ pub async fn run_serve(cli: &Cli, port: u16, readonly: bool, prefix: Option<Stri
     };
 
     // Create router and start server
-    let host_list: Vec<String> = app_state.hosts.iter().map(|h| h.host_id.clone()).collect();
+    let host_list: Vec<String> = app_state.hosts.iter().map(|h| h.host_id.to_string()).collect();
     let app = create_router(app_state)
         .layer(tower_http::cors::CorsLayer::permissive())
         .layer(tower_http::trace::TraceLayer::new_for_http());

@@ -184,8 +184,8 @@ async fn get_top_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::migrate::run_full_migration;
     use crate::db::pool::create_pool;
-    use crate::db::schema::run_migrations;
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
@@ -194,8 +194,7 @@ mod tests {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
         let db = create_pool(&db_path).await?;
-        let pool = db.get_sqlite_connection_pool();
-        run_migrations(pool).await?;
+        run_full_migration(&db).await?;
 
         let summary = get_traffic_summary(&db, None, None, None, None).await?;
         assert!(summary.businesses.is_empty());
@@ -211,8 +210,7 @@ mod tests {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
         let db = create_pool(&db_path).await?;
-        let pool = db.get_sqlite_connection_pool();
-        run_migrations(pool).await?;
+        run_full_migration(&db).await?;
 
         // Insert some test traffic data using raw SQL via SeaORM
         let now = chrono::Utc::now().to_rfc3339();

@@ -1,4 +1,4 @@
-use crate::db::models::FileEntry;
+use crate::entity::file::Model as FileEntry;
 use crate::s3::client::ObjectSummary;
 use crate::types::FileType;
 use std::collections::HashMap;
@@ -84,48 +84,53 @@ pub async fn apply_diff(
         let file_type = classify_file(&obj.key);
         let content_type = get_content_type(&obj.key);
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: host_id.to_string(),
-                key: obj.key.as_str().to_string(),
-                etag: obj.etag.as_str().to_string(),
-                size: obj.size.as_u64() as i64,
-                last_modified: obj.last_modified.clone(),
-                content_type,
-                file_type: file_type.to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: extract_date(&obj.last_modified),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind(host_id)
+        .bind(obj.key.as_str())
+        .bind(obj.etag.as_str())
+        .bind(obj.size.as_u64() as i64)
+        .bind(&obj.last_modified)
+        .bind(content_type)
+        .bind(file_type.to_string())
+        .bind("pending")
+        .bind(extract_date(&obj.last_modified))
+        .bind(false)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::S3GalleryError::DbError(format!("Failed to upsert file: {e}")))?;
     }
 
     for obj in &diff.changed_objects {
         let file_type = classify_file(&obj.key);
         let content_type = get_content_type(&obj.key);
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: host_id.to_string(),
-                key: obj.key.as_str().to_string(),
-                etag: obj.etag.as_str().to_string(),
-                size: obj.size.as_u64() as i64,
-                last_modified: obj.last_modified.clone(),
-                content_type,
-                file_type: file_type.to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: extract_date(&obj.last_modified),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind(host_id)
+        .bind(obj.key.as_str())
+        .bind(obj.etag.as_str())
+        .bind(obj.size.as_u64() as i64)
+        .bind(&obj.last_modified)
+        .bind(content_type)
+        .bind(file_type.to_string())
+        .bind("pending")
+        .bind(extract_date(&obj.last_modified))
+        .bind(false)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::S3GalleryError::DbError(format!("Failed to upsert file: {e}")))?;
     }
 
     for key in &diff.deleted_keys {
-        FileEntry::mark_deleted(pool, host_id, key).await?;
+        sqlx::query("UPDATE files SET is_deleted = 1 WHERE host_id = ? AND key = ?")
+            .bind(host_id)
+            .bind(key)
+            .execute(pool)
+            .await
+            .map_err(|e| crate::error::S3GalleryError::DbError(format!("Failed to mark file deleted: {e}")))?;
     }
 
     Ok(())
@@ -146,18 +151,18 @@ mod tests {
     use super::*;
     use crate::error::Result;
     use crate::s3::client::ObjectSummary;
-    use crate::types::{Etag, FileSize, ObjectKey};
+    use crate::types::{Etag, FileSize, FileType, HostId, MetadataState, ObjectKey};
 
     fn make_file_entry(key: &str, etag: &str) -> FileEntry {
         FileEntry {
-            host_id: "test-host".to_string(),
-            key: key.to_string(),
-            etag: etag.to_string(),
-            size: 100,
+            host_id: HostId::new("test-host").unwrap(),
+            key: ObjectKey::new(key).unwrap(),
+            etag: Etag::new(etag).unwrap(),
+            size: FileSize::new(100),
             last_modified: "2026-01-01T00:00:00Z".to_string(),
             content_type: None,
-            file_type: "unknown".to_string(),
-            metadata_state: "pending".to_string(),
+            file_type: FileType::Unknown,
+            metadata_state: MetadataState::Pending,
             effective_date: "".to_string(),
             is_deleted: false,
         }

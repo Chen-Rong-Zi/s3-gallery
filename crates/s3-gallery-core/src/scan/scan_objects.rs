@@ -119,7 +119,7 @@ impl ScanObjectEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
+    use crate::db::migrate::run_full_migration;
     use crate::s3::client::ObjectSummary;
     use crate::types::{Etag, FileSize, ObjectKey};
     use tempfile::tempdir;
@@ -132,10 +132,10 @@ mod tests {
         let pool = sqlx::SqlitePool::connect(&db_url)
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        run_migrations(&pool).await?;
         let db = sea_orm::Database::connect(&db_url)
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        run_full_migration(&db).await?;
 
         let objects = vec![
             ObjectSummary {

@@ -125,7 +125,7 @@ pub async fn run_scan(config: ScanConfig, endpoint: String) -> Result<ScanResult
 mod tests {
     use super::*;
     use crate::db::pool::create_pool;
-    use crate::db::schema::run_migrations;
+    use crate::db::migrate::run_full_migration;
     use crate::s3::client::S3Client;
     use crate::s3::mock::MockS3Client;
     use tempfile::tempdir;
@@ -141,7 +141,7 @@ mod tests {
         let sea_db = sea_orm::Database::connect(&db_url)
             .await
             .map_err(|e| crate::error::S3GalleryError::DbError(e.to_string()))?;
-        run_migrations(&pool).await?;
+        run_full_migration(&sea_db).await?;
 
         let s3 = Arc::new(MockS3Client::new()) as Arc<dyn S3Client>;
 

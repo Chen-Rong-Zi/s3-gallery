@@ -3,13 +3,14 @@ use axum::{
     http::StatusCode,
 };
 use crate::web::handlers::{HandlerResult, render_template};
+use s3_gallery_core::entity::tag;
 use s3_gallery_core::view::tags as tags_view;
 use serde_json::json;
 
 use crate::web::state::AppState;
 
-/// Convert a TagEntry to a serde_json::Value for template rendering.
-fn tag_entry_to_json(tag: &s3_gallery_core::db::models::TagEntry) -> serde_json::Value {
+/// Convert a tag::Model to a serde_json::Value for template rendering.
+fn tag_entry_to_json(tag: &tag::Model) -> serde_json::Value {
     json!({
         "tag_id": tag.tag_id,
         "tag_name": tag.tag_name,

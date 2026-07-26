@@ -103,14 +103,14 @@ pub async fn gallery(
                 .files
                 .iter()
                 .map(|f| {
-                    let name = file_name_from_key(&f.key);
+                    let name = file_name_from_key(f.key.as_str());
                     GalleryItem {
-                        key: f.key.clone(),
+                        key: f.key.to_string(),
                         name,
                         thumbnail_url: format!("/thumbnails/{}", f.key),
-                        host_id: f.host_id.clone(),
-                        file_type: f.file_type.clone(),
-                        size: f.size,
+                        host_id: f.host_id.to_string(),
+                        file_type: f.file_type.to_string(),
+                        size: f.size.as_u64() as i64,
                         last_modified: f.last_modified.clone(),
                     }
                 })

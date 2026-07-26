@@ -79,9 +79,8 @@ pub async fn get_files_by_tag(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models::{FileEntry, FileTagEntry, TagEntry};
+    use crate::db::migrate::run_full_migration;
     use crate::db::pool::create_pool;
-    use crate::db::schema::run_migrations;
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
@@ -89,87 +88,51 @@ mod tests {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
         let db = create_pool(&db_path).await?;
-        let pool = db.get_sqlite_connection_pool();
-        run_migrations(pool).await?;
+        run_full_migration(&db).await?;
         Ok((db, dir))
     }
 
     async fn seed_test_data(db: &DatabaseConnection) -> Result<()> {
         let pool = db.get_sqlite_connection_pool();
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "photo001.jpg".to_string(),
-                etag: "\"abc123\"".to_string(),
-                size: 1024,
-                last_modified: "2024-01-01T00:00:00Z".to_string(),
-                content_type: Some("image/jpeg".to_string()),
-                file_type: "jpeg".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("photo001.jpg").bind("\"abc123\"")
+        .bind(1024i64).bind("2024-01-01T00:00:00Z").bind(Some("image/jpeg"))
+        .bind("jpeg").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "test-host".to_string(),
-                key: "video.mp4".to_string(),
-                etag: "\"def456\"".to_string(),
-                size: 50000,
-                last_modified: "2024-02-01T00:00:00Z".to_string(),
-                content_type: Some("video/mp4".to_string()),
-                file_type: "mp4".to_string(),
-                metadata_state: "pending".to_string(),
-                effective_date: "".to_string(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("test-host").bind("video.mp4").bind("\"def456\"")
+        .bind(50000i64).bind("2024-02-01T00:00:00Z").bind(Some("video/mp4"))
+        .bind("mp4").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        TagEntry::insert(
-            pool,
-            &TagEntry {
-                tag_id: 0,
-                tag_name: "photo".to_string(),
-                tag_type: "auto".to_string(),
-            },
-        )
-        .await?;
+        sqlx::query("INSERT INTO tags (tag_name, tag_type) VALUES (?, ?)")
+            .bind("photo").bind("auto")
+            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        TagEntry::insert(
-            pool,
-            &TagEntry {
-                tag_id: 0,
-                tag_name: "video".to_string(),
-                tag_type: "auto".to_string(),
-            },
-        )
-        .await?;
+        sqlx::query("INSERT INTO tags (tag_name, tag_type) VALUES (?, ?)")
+            .bind("video").bind("auto")
+            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        let photo_tag = TagEntry::get_by_name(pool, "photo").await?;
-        let video_tag = TagEntry::get_by_name(pool, "video").await?;
+        let photo_id: (i64,) = sqlx::query_as("SELECT tag_id FROM tags WHERE tag_name = ?")
+            .bind("photo")
+            .fetch_one(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileTagEntry::insert(
-            pool,
-            &FileTagEntry {
-                file_key: "photo001.jpg".to_string(),
-                tag_id: photo_tag.tag_id,
-            },
-        )
-        .await?;
+        let video_id: (i64,) = sqlx::query_as("SELECT tag_id FROM tags WHERE tag_name = ?")
+            .bind("video")
+            .fetch_one(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        FileTagEntry::insert(
-            pool,
-            &FileTagEntry {
-                file_key: "video.mp4".to_string(),
-                tag_id: video_tag.tag_id,
-            },
-        )
-        .await?;
+        sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
+            .bind("photo001.jpg").bind(photo_id.0)
+            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+
+        sqlx::query("INSERT OR IGNORE INTO file_tags (file_key, tag_id) VALUES (?, ?)")
+            .bind("video.mp4").bind(video_id.0)
+            .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
         Ok(())
     }

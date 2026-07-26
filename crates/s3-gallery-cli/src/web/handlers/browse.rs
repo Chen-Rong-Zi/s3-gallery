@@ -154,15 +154,15 @@ pub async fn browse(
             .hosts
             .iter()
             .map(|h| {
-                let (size, count) = total_map.get(&h.host_id).copied().unwrap_or((0, 0));
+                let (size, count) = total_map.get(h.host_id.as_str()).copied().unwrap_or((0, 0));
                 let size_str = if size > 0 {
                     FileSize::new(size as u64).to_string()
                 } else {
                     "-".to_string()
                 };
                 EntryView {
-                    name: h.host_id.clone(),
-                    path: h.host_id.clone(),
+                    name: h.host_id.to_string(),
+                    path: h.host_id.to_string(),
                     size: size_str,
                     file_count: count as u64,
                     file_type: "directory".to_string(),

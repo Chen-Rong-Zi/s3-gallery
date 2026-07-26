@@ -6,11 +6,16 @@ use axum::{
 };
 use chrono::Utc;
 use s3_gallery_core::{
-    db::models::ThumbnailEntry,
+    entity::thumbnail,
     error::S3GalleryError,
     thumbnail::generator::generate_thumbnail,
-    types::{BucketName, ObjectKey},
+    types::{BucketName, ObjectKey, ThumbnailFormat},
 };
+use sea_orm::ActiveValue::Set;
+use sea_orm::ActiveModelTrait;
+use sea_orm::ColumnTrait;
+use sea_orm::EntityTrait;
+use sea_orm::QueryFilter;
 
 use crate::web::state::AppState;
 
@@ -33,11 +38,13 @@ pub async fn thumbnail(
 ) -> impl IntoResponse {
     tracing::info!(handler = "thumbnail", key = %key, "serving thumbnail");
 
-    let pool = state.db.get_sqlite_connection_pool();
-
     // Try the database cache first.
-    match ThumbnailEntry::get(pool, &key).await {
-        Ok(entry) => {
+    match thumbnail::Entity::find()
+        .filter(thumbnail::Column::FileKey.eq(key.as_str()))
+        .one(&state.db)
+        .await
+    {
+        Ok(Some(entry)) => {
             tracing::info!(handler = "thumbnail", key = %key, cache = "hit", "thumbnail served from cache");
             return (
                 StatusCode::OK,
@@ -49,7 +56,7 @@ pub async fn thumbnail(
             )
                 .into_response();
         }
-        Err(S3GalleryError::NotFound(_)) => {
+        Ok(None) => {
             tracing::info!(handler = "thumbnail", key = %key, cache = "miss", "thumbnail not cached, fetching from S3");
         }
         Err(e) => {
@@ -126,17 +133,26 @@ pub async fn thumbnail(
         Ok(data) => match generate_thumbnail(&data) {
             Ok(thumbnail_data) => {
                 // Cache locally
-                let _ = ThumbnailEntry::insert(
-                    pool,
-                    &ThumbnailEntry {
-                        file_key: key.clone(),
-                        data: thumbnail_data.clone(),
-                        format: "jpeg".to_string(),
-                        width: None,
-                        height: None,
-                        cached_at: Utc::now().to_rfc3339(),
-                    },
-                )
+                let file_key = match ObjectKey::new(key.clone()) {
+                    Ok(fk) => fk,
+                    Err(e) => {
+                        tracing::error!(handler = "thumbnail", key = %key, error = %e, "invalid key for caching");
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            [("content-type", "application/json")],
+                            format!("{{\"error\":\"invalid key\",\"detail\":\"{e}\"}}").into_bytes(),
+                        ).into_response();
+                    }
+                };
+                let _ = thumbnail::ActiveModel {
+                    file_key: Set(file_key),
+                    data: Set(thumbnail_data.clone()),
+                    format: Set(ThumbnailFormat::Jpeg),
+                    width: Set(None),
+                    height: Set(None),
+                    cached_at: Set(Utc::now().to_rfc3339()),
+                }
+                .insert(&state.db)
                 .await;
 
                 tracing::info!(handler = "thumbnail", key = %key, cache = "generated", size = %thumbnail_data.len(), "thumbnail generated and cached");

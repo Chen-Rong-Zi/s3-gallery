@@ -13,7 +13,6 @@ use tower::util::BoxService;
 use tower::Layer;
 use uuid::Uuid;
 
-use crate::db::models::HostConfigEntry;
 use crate::error::S3GalleryError;
 use crate::s3::config::HostIdentifier;
 use crate::s3::s3_service::S3Service;
@@ -66,16 +65,20 @@ impl Layer<S3Service> for DiscoverLayer {
                         .map_err(|e| S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}")))?;
 
                     // Save host config
-                    HostConfigEntry::upsert_host_config(
-                        &db,
-                        &host.host_id,
-                        &host.host_name,
-                        &host.host_type,
-                        bucket.as_str(),
-                        &endpoint,
-                        "",
+                    sqlx::query(
+                        "INSERT INTO host_config (host_id, host_name, host_type, description, created_at, bucket, endpoint, region) \
+                         VALUES (?, ?, ?, '', datetime('now'), ?, ?, ?) \
+                         ON CONFLICT(host_id) DO UPDATE SET bucket = excluded.bucket, endpoint = excluded.endpoint, region = excluded.region"
                     )
-                    .await?;
+                    .bind(&host.host_id)
+                    .bind(&host.host_name)
+                    .bind(&host.host_type)
+                    .bind(bucket.as_str())
+                    .bind(&endpoint)
+                    .bind("")
+                    .execute(&db)
+                    .await
+                    .map_err(|e| S3GalleryError::DbError(format!("Failed to upsert host config: {e}")))?;
 
                     let prefix = Prefix::new(scope_prefix_str.clone())
                         .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
@@ -122,16 +125,20 @@ impl Layer<S3Service> for DiscoverLayer {
                             let host: HostIdentifier = serde_json::from_slice(&data)
                                 .map_err(|e| S3GalleryError::Internal(format!("Failed to parse host.config.json: {e}")))?;
 
-                            HostConfigEntry::upsert_host_config(
-                                &db,
-                                &host.host_id,
-                                &host.host_name,
-                                &host.host_type,
-                                bucket.as_str(),
-                                &endpoint,
-                                "",
+                            sqlx::query(
+                                "INSERT INTO host_config (host_id, host_name, host_type, description, created_at, bucket, endpoint, region) \
+                                 VALUES (?, ?, ?, '', datetime('now'), ?, ?, ?) \
+                                 ON CONFLICT(host_id) DO UPDATE SET bucket = excluded.bucket, endpoint = excluded.endpoint, region = excluded.region"
                             )
-                            .await?;
+                            .bind(&host.host_id)
+                            .bind(&host.host_name)
+                            .bind(&host.host_type)
+                            .bind(bucket.as_str())
+                            .bind(&endpoint)
+                            .bind("")
+                            .execute(&db)
+                            .await
+                            .map_err(|e| S3GalleryError::DbError(format!("Failed to upsert host config: {e}")))?;
 
                             let prefix = Prefix::new(dir_prefix_str.clone())
                                 .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
@@ -144,16 +151,20 @@ impl Layer<S3Service> for DiscoverLayer {
                             });
                         } else {
                             // No host config — use dir name as host_id
-                            HostConfigEntry::upsert_host_config(
-                                &db,
-                                dir,
-                                "unkown",
-                                "unkown",
-                                bucket.as_str(),
-                                &endpoint,
-                                "",
+                            sqlx::query(
+                                "INSERT INTO host_config (host_id, host_name, host_type, description, created_at, bucket, endpoint, region) \
+                                 VALUES (?, ?, ?, '', datetime('now'), ?, ?, ?) \
+                                 ON CONFLICT(host_id) DO UPDATE SET bucket = excluded.bucket, endpoint = excluded.endpoint, region = excluded.region"
                             )
-                            .await?;
+                            .bind(dir)
+                            .bind("unkown")
+                            .bind("unkown")
+                            .bind(bucket.as_str())
+                            .bind(&endpoint)
+                            .bind("")
+                            .execute(&db)
+                            .await
+                            .map_err(|e| S3GalleryError::DbError(format!("Failed to upsert host config: {e}")))?;
 
                             let prefix = Prefix::new(dir_prefix_str.clone())
                                 .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
@@ -205,7 +216,7 @@ impl Layer<S3Service> for DiscoverLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
+    use crate::db::migrate::run_full_migration;
     use crate::error::Result;
     use crate::s3::mock::MockS3Client;
     use crate::types::BucketName;
@@ -224,7 +235,7 @@ mod tests {
         let db = sea_orm::Database::connect(&db_url)
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        run_migrations(&pool).await?;
+        run_full_migration(&db).await?;
 
         let mock = Arc::new(MockS3Client::new());
         let s3 = S3Service::new(mock);

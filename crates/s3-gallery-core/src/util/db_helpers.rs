@@ -103,9 +103,8 @@ pub fn maybe_host_id(host_id: Option<&str>, sql: &str) -> (String, Vec<String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models::HostConfigEntry;
+    use crate::db::migrate::run_full_migration;
     use crate::db::pool::create_pool;
-    use crate::db::schema::run_migrations;
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
@@ -115,25 +114,24 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let db = create_pool(&db_path).await?;
         let pool = db.get_sqlite_connection_pool().clone();
-        run_migrations(&pool).await?;
+        run_full_migration(&db).await?;
 
-        HostConfigEntry::insert(&pool, &HostConfigEntry {
-            host_id: "h1".into(), host_name: "Host 1".into(),
-            host_type: "test".into(), description: "".into(),
-            created_at: "now".into(), bucket: "".into(),
-            endpoint: "".into(), region: "".into(),
-        }).await?;
-        HostConfigEntry::insert(&pool, &HostConfigEntry {
-            host_id: "h2".into(), host_name: "Host 2".into(),
-            host_type: "test".into(), description: "".into(),
-            created_at: "now".into(), bucket: "".into(),
-            endpoint: "".into(), region: "".into(),
-        }).await?;
+        sqlx::query(
+            "INSERT INTO host_config (host_id, host_name, host_type, description, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("h1").bind("Host 1").bind("test").bind("").bind("now")
+        .execute(&pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        let sql = "SELECT * FROM host_config WHERE host_id = ?";
-        let results: Vec<HostConfigEntry> = fetch_all_opt(&pool, sql, Some("h1")).await?;
+        sqlx::query(
+            "INSERT INTO host_config (host_id, host_name, host_type, description, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("h2").bind("Host 2").bind("test").bind("").bind("now")
+        .execute(&pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+
+        let sql = "SELECT host_id FROM host_config WHERE host_id = ?";
+        let results: Vec<(String,)> = fetch_all_opt(&pool, sql, Some("h1")).await?;
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].host_id, "h1");
+        assert_eq!(results[0].0, "h1");
         Ok(())
     }
 
@@ -143,23 +141,22 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let db = create_pool(&db_path).await?;
         let pool = db.get_sqlite_connection_pool().clone();
-        run_migrations(&pool).await?;
+        run_full_migration(&db).await?;
 
-        HostConfigEntry::insert(&pool, &HostConfigEntry {
-            host_id: "h1".into(), host_name: "Host 1".into(),
-            host_type: "test".into(), description: "".into(),
-            created_at: "now".into(), bucket: "".into(),
-            endpoint: "".into(), region: "".into(),
-        }).await?;
-        HostConfigEntry::insert(&pool, &HostConfigEntry {
-            host_id: "h2".into(), host_name: "Host 2".into(),
-            host_type: "test".into(), description: "".into(),
-            created_at: "now".into(), bucket: "".into(),
-            endpoint: "".into(), region: "".into(),
-        }).await?;
+        sqlx::query(
+            "INSERT INTO host_config (host_id, host_name, host_type, description, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("h1").bind("Host 1").bind("test").bind("").bind("now")
+        .execute(&pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
 
-        let sql = "SELECT * FROM host_config ORDER BY host_id";
-        let results: Vec<HostConfigEntry> = fetch_all_opt(&pool, sql, None).await?;
+        sqlx::query(
+            "INSERT INTO host_config (host_id, host_name, host_type, description, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("h2").bind("Host 2").bind("test").bind("").bind("now")
+        .execute(&pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+
+        let sql = "SELECT host_id FROM host_config ORDER BY host_id";
+        let results: Vec<(String,)> = fetch_all_opt(&pool, sql, None).await?;
         assert_eq!(results.len(), 2);
         Ok(())
     }

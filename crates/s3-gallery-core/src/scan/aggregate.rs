@@ -241,7 +241,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::schema::run_migrations;
+    use crate::db::migrate::run_full_migration;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -252,10 +252,10 @@ mod tests {
         let pool = sqlx::SqlitePool::connect(&db_url)
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
-        run_migrations(&pool).await?;
         let db = sea_orm::Database::connect(&db_url)
             .await
             .map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        run_full_migration(&db).await?;
 
         let layer = AggregateLayer::new(db, None);
         // Just verify it constructs without error

@@ -3,13 +3,14 @@ use axum::{
     http::StatusCode,
 };
 use crate::web::handlers::{HandlerResult, render_template};
+use s3_gallery_core::entity::file;
 use s3_gallery_core::view::duplicates as duplicates_view;
 use serde_json::json;
 
 use crate::web::state::AppState;
 
-/// Convert a FileEntry to a serde_json::Value for template rendering.
-fn file_entry_to_json(file: &s3_gallery_core::db::models::FileEntry) -> serde_json::Value {
+/// Convert a file::Model to a serde_json::Value for template rendering.
+fn file_entry_to_json(file: &file::Model) -> serde_json::Value {
     json!({
         "key": file.key,
         "etag": file.etag,

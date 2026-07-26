@@ -1,7 +1,5 @@
 pub mod migrate;
-pub mod models;
 pub mod pool;
-pub mod schema;
 pub mod status;
 pub use self::status::*;
 

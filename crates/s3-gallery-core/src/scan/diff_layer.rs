@@ -14,7 +14,8 @@ use tower::{Layer, Service};
 
 use crate::classify::classifier::{classify_extension, content_type_from_extension, parse_extension};
 use crate::s3::client::ObjectSummary;
-use crate::types::{Etag, FileSize, ObjectKey};
+use crate::entity::file::Model as FileEntry;
+use crate::types::{Etag, FileSize, HostId, MetadataState, ObjectKey};
 use crate::scan::diff::{apply_diff, diff_objects};
 use crate::scan::pipeline::{HostDiffResult, ScanRequest, ScanResponse};
 use crate::scan::scan_objects::ScanObjectEntry;
@@ -80,10 +81,39 @@ where
                         .collect();
 
                     // Get existing DB entries
-                    let db_entries = crate::db::models::FileEntry::list_by_prefix(
-                        &db, &host.host_id, host.prefix.as_str(),
+                    let db_rows: Vec<(String, String, String, i64, String, Option<String>, String, String, String, bool)> = sqlx::query_as(
+                        "SELECT host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted                          FROM files WHERE host_id = ? AND key LIKE ? || '%' AND is_deleted = 0 ORDER BY key",
                     )
-                    .await?;
+                    .bind(&host.host_id)
+                    .bind(host.prefix.as_str())
+                    .fetch_all(&db)
+                    .await
+                    .map_err(|e| crate::error::S3GalleryError::DbError(format!("Failed to list files by prefix: {e}")))?;
+                    let mut db_entries: Vec<FileEntry> = Vec::with_capacity(db_rows.len());
+                    for (hid, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) in db_rows {
+                        let host_id = HostId::new(hid)
+                            .map_err(|e| crate::error::S3GalleryError::DbError(format!("Invalid host_id: {e}")))?;
+                        let key = ObjectKey::new(key)
+                            .map_err(|e| crate::error::S3GalleryError::DbError(format!("Invalid key: {e}")))?;
+                        let etag = Etag::new(etag)
+                            .map_err(|e| crate::error::S3GalleryError::DbError(format!("Invalid etag: {e}")))?;
+                        let file_type = file_type.parse::<FileType>()
+                            .map_err(|e| crate::error::S3GalleryError::DbError(format!("Invalid file_type: {e}")))?;
+                        let metadata_state = metadata_state.parse::<MetadataState>()
+                            .map_err(|e| crate::error::S3GalleryError::DbError(format!("Invalid metadata_state: {e}")))?;
+                        db_entries.push(FileEntry {
+                            host_id,
+                            key,
+                            etag,
+                            size: FileSize::new(size as u64),
+                            last_modified,
+                            content_type,
+                            file_type,
+                            metadata_state,
+                            effective_date,
+                            is_deleted,
+                        });
+                    }
 
                     // Diff
                     let diff = diff_objects(&s3_objects, &db_entries);

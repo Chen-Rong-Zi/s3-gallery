@@ -1,6 +1,6 @@
 use crate::cli::{Cli, DiffCommands, TagCommands, ViewCommands};
 use s3_gallery_core::db::pool::create_pool;
-use s3_gallery_core::db::schema::run_migrations;
+use s3_gallery_core::db::migrate::run_full_migration;
 use s3_gallery_core::error::Result;
 use s3_gallery_core::types::*;
 use s3_gallery_core::view::export::ExportFormat;
@@ -9,7 +9,7 @@ use s3_gallery_core::view::LocalView;
 pub async fn run_view(cli: &Cli, _host: &str, view_cmd: &ViewCommands) -> Result<()> {
     let db_path = &cli.db_path;
     let pool = create_pool(db_path).await?;
-    run_migrations(&pool).await?;
+    run_full_migration(&pool).await?;
     let view = LocalView::new(pool);
 
     match view_cmd {
@@ -112,7 +112,7 @@ pub async fn run_view(cli: &Cli, _host: &str, view_cmd: &ViewCommands) -> Result
             TagCommands::List => {
                 let tags = view.list_tags(_host).await?;
                 for tag in &tags {
-                    println!("{} ({})", tag.tag_name, tag.tag_type);
+                    println!("{} ({})", tag.tag_name, format!("{:?}", tag.tag_type));
                 }
             }
             TagCommands::Files { tag } => {

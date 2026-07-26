@@ -7,7 +7,7 @@ use tower::ServiceBuilder;
 
 use crate::cli::Cli;
 use s3_gallery_core::db::pool::create_pool;
-use s3_gallery_core::db::schema::run_migrations;
+use s3_gallery_core::db::migrate::run_full_migration;
 use s3_gallery_core::error::{Result, S3GalleryError};
 use s3_gallery_core::s3::client::S3Client;
 use s3_gallery_core::s3::config::OssConfig;
@@ -21,7 +21,7 @@ use s3_gallery_core::scan::diff_layer::DiffLayer;
 use s3_gallery_core::scan::discover::DiscoverLayer;
 use s3_gallery_core::scan::pipeline::ScanRequest;
 use s3_gallery_core::scan::process::ProcessLayer;
-use s3_gallery_core::types::{BucketName, ObjectKey};
+use s3_gallery_core::types::{BucketName, ObjectKey, Prefix};
 
 /// Parse bucket from CLI, create S3 client, and return bucket info.
 async fn setup_scan_common(cli: &Cli) -> Result<(BucketName, Arc<dyn S3Client>, String)> {
@@ -54,7 +54,7 @@ async fn setup_db_pool(cli: &Cli) -> Result<DatabaseConnection> {
         std::fs::create_dir_all(parent)?;
     }
     let db = create_pool(db_path).await?;
-    run_migrations(db.get_sqlite_connection_pool()).await?;
+    run_full_migration(&db).await?;
     Ok(db)
 }
 
@@ -165,7 +165,7 @@ async fn run_scan_core(
     // ServiceBuilder applies layers from outside-in, so the LAST layer is the outermost wrapper.
     // We want: AggregateLayer(ProcessLayer(DiffLayer(DiscoverLayer(discover_s3))))
     // So: ServiceBuilder::new().layer(Aggregate).layer(Process).layer(Diff).layer(Discover).service(discover_s3)
-    let scope_prefix_key = ObjectKey::new(scope_prefix.to_string())
+    let scope_prefix_key = Prefix::new(scope_prefix.to_string())
         .map_err(|e| S3GalleryError::InvalidConfig(format!("Invalid prefix: {e}")))?;
 
     let sqlite_pool = db.get_sqlite_connection_pool();

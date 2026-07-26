@@ -10,7 +10,7 @@ use crate::web::state::AppState;
 /// configured S3 bucket name.
 pub async fn settings(State(state): State<AppState>) -> HandlerResult {
     tracing::info!(handler = "settings", "rendering settings");
-    let host_names: Vec<String> = state.hosts.iter().map(|h| h.host_id.clone()).collect();
+    let host_names: Vec<String> = state.hosts.iter().map(|h| h.host_id.to_string()).collect();
     let context = json!({
         "hosts": host_names,
         "prefix": state.prefix,

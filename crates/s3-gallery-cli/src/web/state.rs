@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use s3_gallery_core::db::models::HostConfigEntry;
+use s3_gallery_core::entity::host_config::Model as HostConfigEntry;
 use s3_gallery_core::s3::layers::TrafficLayer;
 use s3_gallery_core::s3::s3_service::S3Service;
 use s3_gallery_core::s3::traffic_recorder::TrafficRecorder;
@@ -33,7 +33,7 @@ pub struct AppState {
 impl AppState {
     /// Find a host config by host_id.
     pub fn get_host(&self, host_id: &str) -> Option<&HostConfigEntry> {
-        self.hosts.iter().find(|h| h.host_id == host_id)
+        self.hosts.iter().find(|h| h.host_id.as_str() == host_id)
     }
 
     /// Get the effective region for a host (stored or CLI fallback).

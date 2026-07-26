@@ -108,9 +108,8 @@ fn extract_date(timestamp: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::models::FileEntry;
+    use crate::db::migrate::run_full_migration;
     use crate::db::pool::create_pool;
-    use crate::db::schema::run_migrations;
     use crate::error::S3GalleryError;
     use tempfile::tempdir;
 
@@ -118,77 +117,40 @@ mod tests {
         let dir = tempdir().map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         let db_path = dir.path().join("test.db");
         let db = create_pool(&db_path).await?;
-        let pool = db.get_sqlite_connection_pool();
-        run_migrations(pool).await?;
+        run_full_migration(&db).await?;
         Ok((db, dir))
     }
 
     async fn seed_test_files(db: &DatabaseConnection) -> Result<()> {
         let pool = db.get_sqlite_connection_pool();
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "host1".into(),
-                key: "a.jpg".into(),
-                etag: "\"1\"".into(),
-                size: 100,
-                last_modified: "2024-01-15T10:00:00Z".into(),
-                content_type: Some("image/jpeg".into()),
-                file_type: "jpeg".into(),
-                metadata_state: "pending".into(),
-                effective_date: "".into(),
-                is_deleted: false,
-            },
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "host1".into(),
-                key: "b.jpg".into(),
-                etag: "\"2\"".into(),
-                size: 200,
-                last_modified: "2024-01-15T11:00:00Z".into(),
-                content_type: Some("image/jpeg".into()),
-                file_type: "jpeg".into(),
-                metadata_state: "pending".into(),
-                effective_date: "".into(),
-                is_deleted: false,
-            },
+        .bind("host1").bind("a.jpg").bind("\"1\"")
+        .bind(100i64).bind("2024-01-15T10:00:00Z").bind(Some("image/jpeg"))
+        .bind("jpeg").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "host1".into(),
-                key: "c.mp4".into(),
-                etag: "\"3\"".into(),
-                size: 50000,
-                last_modified: "2024-02-20T14:00:00Z".into(),
-                content_type: Some("video/mp4".into()),
-                file_type: "mp4".into(),
-                metadata_state: "pending".into(),
-                effective_date: "".into(),
-                is_deleted: false,
-            },
+        .bind("host1").bind("b.jpg").bind("\"2\"")
+        .bind(200i64).bind("2024-01-15T11:00:00Z").bind(Some("image/jpeg"))
+        .bind("jpeg").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
-        FileEntry::upsert(
-            pool,
-            &FileEntry {
-                host_id: "host1".into(),
-                key: "d.txt".into(),
-                etag: "\"4\"".into(),
-                size: 50,
-                last_modified: "2024-03-01T00:00:00Z".into(),
-                content_type: None,
-                file_type: "unknown".into(),
-                metadata_state: "pending".into(),
-                effective_date: "".into(),
-                is_deleted: true,
-            },
+        .bind("host1").bind("c.mp4").bind("\"3\"")
+        .bind(50000i64).bind("2024-02-20T14:00:00Z").bind(Some("video/mp4"))
+        .bind("mp4").bind("pending").bind("").bind(false)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO files (host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .await?;
+        .bind("host1").bind("d.txt").bind("\"4\"")
+        .bind(50i64).bind("2024-03-01T00:00:00Z").bind(None::<String>)
+        .bind("unknown").bind("pending").bind("").bind(true)
+        .execute(pool).await.map_err(|e| S3GalleryError::DbError(e.to_string()))?;
         Ok(())
     }
 

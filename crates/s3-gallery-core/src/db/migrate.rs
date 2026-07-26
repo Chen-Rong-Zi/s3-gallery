@@ -1,4 +1,24 @@
+use sea_orm::DatabaseConnection;
 use sea_orm_migration::prelude::*;
+
+use crate::error::S3GalleryError;
+
+/// Run the full migration (create all tables, indexes, backfill data)
+/// using the SeaORM `InitialMigration`.
+///
+/// This is the replacement for the old `db::schema::run_migrations`.
+///
+/// # Errors
+///
+/// Returns `S3GalleryError::DbError` if the migration fails.
+pub async fn run_full_migration(db: &DatabaseConnection) -> crate::error::Result<()> {
+    let manager = SchemaManager::new(db);
+    InitialMigration
+        .up(&manager)
+        .await
+        .map_err(|e| S3GalleryError::MigrationError(e.to_string()))?;
+    Ok(())
+}
 
 #[derive(DeriveMigrationName)]
 pub struct InitialMigration;
