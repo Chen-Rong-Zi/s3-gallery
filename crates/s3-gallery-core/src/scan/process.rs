@@ -22,18 +22,7 @@ use crate::scan::tag_service::TagService;
 use crate::types::ObjectKey;
 
 /// Raw DB row type from sqlx queries listing files.
-type FileRow = (
-    String,
-    String,
-    String,
-    i64,
-    String,
-    Option<String>,
-    String,
-    String,
-    String,
-    bool,
-);
+type FileRow = (String, String);
 
 /// ProcessLayer wraps an inner service with metadata extraction.
 pub struct ProcessLayer {
@@ -100,7 +89,7 @@ where
 
                     // Find pending files
                     let pending: Vec<FileRow> = sqlx::query_as(
-                        "SELECT host_id, key, etag, size, last_modified, content_type, file_type, metadata_state, effective_date, is_deleted FROM files WHERE host_id = ? AND metadata_state = 'pending' AND is_deleted = 0",
+                        "SELECT key, file_type FROM files WHERE host_id = ? AND metadata_state = 'pending' AND is_deleted = 0",
                     )
                     .bind(&host.host_id)
                     .fetch_all(&db)
@@ -118,13 +107,13 @@ where
                     let mut exif_reqs = Vec::new();
 
                     for entry in &pending {
-                        let key_str = entry.1.as_str();
+                        let key_str = entry.0.as_str();
                         let file_name = key_str.rsplit('/').next().unwrap_or(key_str);
                         if let Some(ext) = parse_extension(file_name) {
                             let file_type = classify_extension(&ext).to_string();
-                            if let Ok(key) = ObjectKey::new(entry.1.clone()) {
+                            if let Ok(key) = ObjectKey::new(entry.0.clone()) {
                                 contexts.push(ExifContext {
-                                    key: entry.1.clone(),
+                                    key: entry.0.clone(),
                                     file_type: file_type.clone(),
                                     host_id: host.host_id.clone(),
                                 });

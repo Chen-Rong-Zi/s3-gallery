@@ -165,8 +165,8 @@ impl Layer<S3Service> for DiscoverLayer {
                                  ON CONFLICT(host_id) DO UPDATE SET bucket = excluded.bucket, endpoint = excluded.endpoint, region = excluded.region"
                             )
                             .bind(dir)
-                            .bind("unkown")
-                            .bind("unkown")
+                            .bind("unknown")
+                            .bind("unknown")
                             .bind(bucket.as_str())
                             .bind(&endpoint)
                             .bind("")

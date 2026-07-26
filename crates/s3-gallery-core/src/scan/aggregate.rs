@@ -195,7 +195,7 @@ where
                     use sea_orm::ConnectionTrait;
                     let stmt = Statement::from_sql_and_values(
                         sea_orm::DatabaseBackend::Sqlite,
-                        "SELECT COALESCE(SUM(size), 0) FROM files \
+                        "SELECT COALESCE(SUM(size), 0) AS total_size FROM files \
                          WHERE host_id IN (SELECT host_id FROM scan_objects WHERE scan_id = ?) \
                          AND is_deleted = 0",
                         vec![sea_orm::Value::String(Some(Box::new(resp.scan_id.clone())))],
@@ -203,12 +203,10 @@ where
                     db.query_one(stmt)
                         .await
                         .map_err(|e| S3GalleryError::DbError(format!("Failed to sum sizes: {e}")))?
-                        .and_then(|row| {
-                            row.try_get_by::<i64, usize>(0)
-                                .or_else(|_| row.try_get_by::<i64, &str>("COALESCE(SUM(size), 0)"))
-                                .ok()
-                        })
-                        .unwrap_or(0) as u64
+                        .ok_or_else(|| S3GalleryError::DbError("No result from size query".to_string()))?
+                        .try_get_by::<i64, &str>("total_size")
+                        .map_err(|e| S3GalleryError::DbError(format!("Failed to decode total_size: {e}")))?
+                        as u64
                 };
 
                 // 6. Calculate estimated cost ($0.09/GB download)
