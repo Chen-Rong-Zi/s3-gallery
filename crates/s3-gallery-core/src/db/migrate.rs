@@ -26,6 +26,11 @@ pub struct InitialMigration;
 #[async_trait::async_trait]
 impl MigrationTrait for InitialMigration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // Enable WAL mode for better concurrent read performance.
+        let db = manager.get_connection();
+        db.execute_unprepared("PRAGMA journal_mode = WAL;").await?;
+        db.execute_unprepared("PRAGMA foreign_keys = ON;").await?;
+
         // host_config
         manager
             .create_table(
@@ -52,6 +57,24 @@ impl MigrationTrait for InitialMigration {
                             .default(""),
                     )
                     .col(ColumnDef::new(Alias::new("created_at")).string().not_null())
+                    .col(
+                        ColumnDef::new(Alias::new("bucket"))
+                            .string()
+                            .not_null()
+                            .default(""),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("endpoint"))
+                            .string()
+                            .not_null()
+                            .default(""),
+                    )
+                    .col(
+                        ColumnDef::new(Alias::new("region"))
+                            .string()
+                            .not_null()
+                            .default(""),
+                    )
                     .to_owned(),
             )
             .await?;
@@ -485,6 +508,7 @@ impl MigrationTrait for InitialMigration {
                 DbErr::Custom(format!("Missing columns for index at position {i}"))
             })?;
             let mut idx = Index::create()
+                .if_not_exists()
                 .name(*name)
                 .table(Alias::new(*table_name))
                 .to_owned();
@@ -494,9 +518,15 @@ impl MigrationTrait for InitialMigration {
             manager.create_index(idx).await?;
         }
 
+        // ── Insert default scan_metadata row ──
+        let conn = manager.get_connection();
+        conn.execute_unprepared(
+            "INSERT OR IGNORE INTO scan_metadata (host_id, db_schema_version) VALUES ('default', 1)"
+        )
+        .await?;
+
         // ── namespace_custom data migration ──
-        let db = manager.get_connection();
-        db.execute_unprepared(
+        conn.execute_unprepared(
             "UPDATE metadata SET namespace_custom = namespace, namespace = 'custom' \
              WHERE namespace NOT IN ('exif', 'video', 'audio', 'general')",
         )
