@@ -27,6 +27,9 @@ pub enum S3GalleryError {
     #[error("Database migration failed: {0}")]
     MigrationError(String),
 
+    #[error("SeaORM database error: {0}")]
+    SeaOrmDbErr(#[from] sea_orm::DbErr),
+
     // --- Validation errors ---
     #[error("Validation error: {0}")]
     ValidationError(String),
